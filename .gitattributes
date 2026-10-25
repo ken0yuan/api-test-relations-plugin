@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+# Preserve the frozen ledger's original bytes and SHA-256 across checkouts.
+src/api_test_relations/catalogs/pytorch-api-ledger.json -text whitespace=cr-at-eol

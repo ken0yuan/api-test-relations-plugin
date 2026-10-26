@@ -1,3 +1,9 @@
+# 0.1.7 — File-scoped collection gaps and sibling test imports
+
+File-level pytest collection gaps are now retained as module-owned records only when their source path exactly matches that module. Unknown collection paths and test-phase gaps without a test owner still block verification. Each pytest worker also receives its own test file's parent directory on `PYTHONPATH`, fixing sibling imports such as `test/nn/attention/test_fa3.py` importing `_fa_test_common.py`.
+
+The single-database schema, append verification, and completed full-nodeid exclusion remain unchanged. This fix does not rerun completed test instances.
+
 # 0.1.6 — Incremental single-database runner
 
 Add transactional append to the normalized single_database/1 baseline. Completed identities, including zero-observation tests and tests with existing gaps, are excluded before execution and rejected again at merge if a new phase/relationship names them. New rows are independently checked against raw shards and the destination. Replacing an interrupted instance requires the new observations to contain every prior positive API/phase/alias tuple; otherwise rollback and preserve raw evidence. Original completed provenance remains unchanged.

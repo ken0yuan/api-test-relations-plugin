@@ -71,7 +71,15 @@ def launch_spec(manifest, root, row, attempt):
     output = root/'attempts'/attempt
     env = {k: v for k,v in os.environ.items() if not k.startswith('API_RELATION_')}
     env.pop('PYTEST_ADDOPTS', None); env.pop('PYTEST_PLUGINS', None)
-    env.update(PYTHONPATH=':'.join([manifest['plugin_root'], str(Path(__file__).parent), *manifest.get('dependency_paths', []), str(repo/'test'), str(repo)]),
+    # PyTorch test files often import sibling helpers by bare module name
+    # (for example test/nn/attention/test_fa3.py -> _fa_test_common.py).
+    # Each worker owns exactly one source file, so exposing its parent directory
+    # is scoped to that collection and preserves ordinary pytest import semantics.
+    source_dir = str(Path(row['source']).resolve().parent) if row['runner'] != 'doctests' else ''
+    pythonpath = [manifest['plugin_root'], str(Path(__file__).parent),
+                  *manifest.get('dependency_paths', []), source_dir,
+                  str(repo/'test'), str(repo)]
+    env.update(PYTHONPATH=':'.join(p for p in pythonpath if p),
         PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTORCH_TESTING_DEVICE_ONLY_FOR=manifest['device_filter'],
         CUDA_VISIBLE_DEVICES='0', OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', MAX_JOBS='2',
         TORCHINDUCTOR_COMPILE_THREADS='2', PYTORCH_NUM_PYTEST_RERUNS='0',

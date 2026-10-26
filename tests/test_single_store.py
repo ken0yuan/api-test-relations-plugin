@@ -82,6 +82,31 @@ def test_interruption_never_promotes_finally_closed_instance(tmp_path):
         assert db.execute('SELECT count(*) FROM observations').fetchone()[0]==1
 
 
+def test_file_level_collection_gap_is_stored_without_test_owner(tmp_path):
+    target=baseline(tmp_path); root=capture(tmp_path); add_phases(root)
+    with sqlite3.connect(root/'shards/2147483000.sqlite') as raw:
+        raw.execute('INSERT INTO gaps VALUES (?,?,?)',
+                    ('test/test_one.py','collection','collection_unavailable: sibling import failed'))
+    result=single_store.append_capture(root,target,'one')
+    assert result['cleanup']=='complete'
+    with sqlite3.connect(target) as db:
+        assert db.execute('SELECT test_id,phase,reason FROM capture_gaps WHERE phase="collection"').fetchone() == (
+            None,'collection','collection_unavailable: sibling import failed')
+        assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
+
+
+def test_collection_gap_for_another_file_is_still_rejected(tmp_path):
+    target=baseline(tmp_path); root=capture(tmp_path); add_phases(root)
+    with sqlite3.connect(root/'shards/2147483000.sqlite') as raw:
+        raw.execute('INSERT INTO gaps VALUES (?,?,?)',
+                    ('test/not_this_module.py','collection','collection_unavailable: unknown source'))
+    with pytest.raises(ValueError,match='Gap owner missing'):
+        single_store.append_capture(root,target,'one')
+    assert root.exists()
+    with sqlite3.connect(target) as db:
+        assert db.execute('SELECT count(*) FROM capture_gaps WHERE reason LIKE "collection_unavailable:%"').fetchone()[0]==0
+
+
 def test_four_separate_captures_serially_merge_to_one_database(tmp_path):
     target=baseline(tmp_path)
     for i in range(4):

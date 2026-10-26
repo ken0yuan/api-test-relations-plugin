@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+from pathlib import PurePosixPath
 
 from .cli import read
 from .retention import _idle, _inventory
@@ -22,6 +23,17 @@ def observations(db, test_id):
     return set(db.execute('''SELECT a.api_id,p.name,g.api_ids_json FROM observations o
         JOIN apis a ON a.id=o.api_key JOIN phases p ON p.id=o.phase_key
         JOIN alias_groups g ON g.id=o.alias_group_key WHERE o.test_key=?''', (test_id,)))
+
+
+def _is_module_collection_gap(node, phase, module_file):
+    """Accept a file-scoped collection gap only for this module's source file."""
+    if phase != 'collection' or not node or not module_file:
+        return False
+    def normalized(path):
+        value = PurePosixPath(str(path).replace('\\', '/'))
+        parts = value.parts[1:] if value.parts[:1] == ('pytorch',) else value.parts
+        return PurePosixPath(*parts)
+    return normalized(node) == normalized(module_file)
 
 
 def verify_raw(db, source, retained):
@@ -60,6 +72,7 @@ def verify_raw(db, source, retained):
 def import_merged(db, merged, module, attempt, version, receipt):
     """Caller holds BEGIN IMMEDIATE; failure rolls back the whole module."""
     module_id = db.execute('SELECT id FROM modules WHERE module=?', (module,)).fetchone()[0]
+    module_file = db.execute('SELECT file FROM modules WHERE id=?', (module_id,)).fetchone()[0]
     retained = completed(db, module)
     raw_tests = dict(merged.execute('SELECT nodeid,file FROM tests'))
     phase_rows = list(merged.execute('SELECT nodeid,phase,state FROM phases'))
@@ -101,7 +114,8 @@ def import_merged(db, merged, module, attempt, version, receipt):
         if actual_phases != set(stages.items()): raise ValueError('Destination phase mismatch')
     for node, phase, reason in merged.execute('SELECT nodeid,phase,reason FROM gaps'):
         tid = ids.get(node) if node else None
-        if node and tid is None: raise ValueError('Gap owner missing')
+        if node and tid is None and not _is_module_collection_gap(node, phase, module_file):
+            raise ValueError('Gap owner missing')
         if not db.execute('SELECT 1 FROM capture_gaps WHERE module_id=? AND test_id IS ? AND phase=? AND reason=?',
                           (module_id, tid, phase, reason)).fetchone():
             db.execute('INSERT INTO capture_gaps VALUES (?,?,?,?)', (module_id, tid, phase, reason))

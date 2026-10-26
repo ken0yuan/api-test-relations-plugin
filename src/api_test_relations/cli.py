@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from . import __version__
 import platform
 import shlex
 import shutil
@@ -68,7 +69,7 @@ def initialize(root, repo, catalog, exclude, label, imports):
     try:
         commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True, stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.CalledProcessError): commit = None
-    manifest = {'schema': 'api_test_relations_plugin/1', 'package_version': '0.1.6', 'capture_pid': os.getpid(), 'created_at': time.time(), 'repo': str(repo),
+    manifest = {'schema': 'api_test_relations_plugin/1', 'package_version': __version__, 'capture_pid': os.getpid(), 'created_at': time.time(), 'repo': str(repo),
                 'commit': commit, 'python': sys.executable, 'python_version': sys.version,
                 'platform': platform.platform(), 'machine': platform.machine(), 'backend_label': label,
                 'catalog': str(root / 'api-catalog.json'), 'catalog_count': len(ids),

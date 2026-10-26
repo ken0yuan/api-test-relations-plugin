@@ -51,7 +51,7 @@ api-test-relations-plugin/
 在服务器**原有测试环境**中安装，以下安装不会依赖或替换 torch：
 
 ```bash
-python -m pip install ./api_test_relations-0.1.5-py3-none-any.whl
+python -m pip install ./api_test_relations-0.1.6-py3-none-any.whl
 api-test-relations doctor
 ```
 
@@ -101,6 +101,14 @@ api-test-relations query --out /data/api-relations/relations.sqlite --api torch.
 返回完整参数化 nodeid、`pytorch/` 开头的测试文件、阶段、API ID、同一对象的别名、首个调用点和采集缺口。未观测到关系不等于没有测试调用该 API；`capture_finished` 表示采集会话收尾，不是零遗漏声明。
 
 结束时等待已记录子进程最多 120 秒，可用 `--api-relations-child-wait` 调整。超时不杀服务器进程，保留缺口和原始分片。异常中断保留已写分片；不要将它当成完整采集，或对原目录直接重新运行。
+
+## 单库增量续跑
+
+已有规范化 `api_test_relations_single_database/1` 基线时，可用 `api-test-relations append --out RUN --database BASE.sqlite --module MODULE` 追加核验后的未完成实例，并自动清理本次原始目录。完成实例禁止覆盖；中断实例若重采没有包含旧的全部正向关系，事务回滚、保留原件。该格式与上面 `compact` 的单次运行导出格式不同，不会自动互转。
+
+仓库 `scripts/run_single_database.py --out PREPARED_RUN` 提供当前 CUDA 基线使用的单写入者、最多四 worker 调度接入。它读取已准备的 `manifest.json`、`queue.json`，按完整 nodeid 排除完成实例；合并核验成功后清理该 attempt 的私有临时/编译缓存。失败则停止派发并保留证据。冻结清单包括插件及调度器源文件哈希、源码提交与测试文件哈希、解释器/台账/数据库路径、测试模块列表、资源与时间限制；不提供任意目录自动恢复或后端自动迁移。NPU 接入继续使用现有 pytest 命令，不能直接套用此 CUDA 资源策略。
+
+WSL 运行时，应将活动数据库、分片、临时/编译缓存、调度状态和日志全部放在 WSL 的 Linux 文件系统（例如 `/home/USER/api-relations/`），不要放到 `/mnt/c` 或 `/mnt/d`。按测试查询的大库应先创建 `CREATE INDEX IF NOT EXISTS observations_by_test ON observations(test_key)`；它只增加索引，不修改关系。Windows 端仅保留源码及静态入口。
 
 ## ARM + 昇腾实机验收
 

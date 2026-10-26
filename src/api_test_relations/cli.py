@@ -68,7 +68,7 @@ def initialize(root, repo, catalog, exclude, label, imports):
     try:
         commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True, stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.CalledProcessError): commit = None
-    manifest = {'schema': 'api_test_relations_plugin/1', 'package_version': '0.1.5', 'capture_pid': os.getpid(), 'created_at': time.time(), 'repo': str(repo),
+    manifest = {'schema': 'api_test_relations_plugin/1', 'package_version': '0.1.6', 'capture_pid': os.getpid(), 'created_at': time.time(), 'repo': str(repo),
                 'commit': commit, 'python': sys.executable, 'python_version': sys.version,
                 'platform': platform.platform(), 'machine': platform.machine(), 'backend_label': label,
                 'catalog': str(root / 'api-catalog.json'), 'catalog_count': len(ids),
@@ -136,6 +136,9 @@ def main(argv=None):
     s.add_argument('--destination', type=Path, required=True)
     c = commands.add_parser('compact', help='After all producers exit: merge, verify, keep one database and delete this run')
     c.add_argument('--database', type=Path, required=True)
+    a = commands.add_parser('append', help='Verify and append a stopped run to an existing single_database/1 database, then clean raw output')
+    a.add_argument('--database', type=Path, required=True)
+    a.add_argument('--module', required=True)
     for name, command in commands.choices.items():
         if name != 'doctor': command.add_argument('--out', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -143,6 +146,9 @@ def main(argv=None):
     elif args.action == 'compact':
         from .retention import compact
         result = compact(args.out, args.database)
+    elif args.action == 'append':
+        from .single_store import append_capture
+        result = append_capture(args.out, args.database, args.module)
     elif args.action == 'settle':
         from .settle import settle
         result = settle(args.out, args.destination)

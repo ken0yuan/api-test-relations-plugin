@@ -23,7 +23,13 @@ def _idle(root, manifest):
             data = read(path)
             if data.get('pid'):
                 pids.add(int(data['pid']))
-    live = {p for p in pids if Path('/proc', str(p)).exists()}
+    live = set()
+    for pid in pids:
+        try:
+            state = Path('/proc', str(pid), 'stat').read_text().rpartition(')')[2].split()[0]
+            if state != 'Z': live.add(pid)
+        except FileNotFoundError:
+            pass
     live |= active_children(root / 'shards')
     if live:
         raise RuntimeError('Capture producers must exit before compacting: ' + str(sorted(live)))
@@ -35,6 +41,9 @@ def _inventory(root):
         if path.is_symlink():
             raise ValueError('Symlinks are not allowed in disposable capture output')
         if path.is_file() and path.name != '.retention.lock' and not path.name.endswith('-shm'):
+            # Read-only SQLite WAL readers may create an empty sidecar; it has no observations.
+            if path.name.endswith('-wal') and path.stat().st_size == 0:
+                continue
             result[str(path.relative_to(root))] = digest(path)
     return result
 

@@ -1,0 +1,160 @@
+"""Four independent packaged-plugin captures; one aggregate writer, explicit lineage."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import sqlite3
+import subprocess
+import sys
+import time
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+def save(path, data):
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2)); tmp.replace(path)
+
+
+def sha(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def proc(pid):
+    try:
+        root = Path('/proc', str(pid)); stat = (root/'stat').read_text().rpartition(')')[2].split()
+        return {'pid': int(pid), 'start_ticks': stat[19], 'state': stat[0],
+                'command': (root/'cmdline').read_bytes().rstrip(b'\0').decode().split('\0')}
+    except (OSError, IndexError):
+        return None
+
+
+def live(worker):
+    actual = proc(worker['pid'])
+    return bool(actual and actual['state'] != 'Z' and actual['start_ticks'] == worker['start_ticks'])
+
+
+def resources():
+    mem = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+    try:
+        gpu = int(subprocess.check_output(['nvidia-smi', '--id=0', '--query-gpu=memory.free',
+                   '--format=csv,noheader,nounits'], text=True, timeout=5).strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        gpu = None
+    return {'memory_available_mib': int(mem['MemAvailable'].split()[0])//1024, 'gpu_free_mib': gpu}
+
+
+def can_launch(resource):
+    return resource['memory_available_mib'] >= 3072 and resource['gpu_free_mib'] is not None and resource['gpu_free_mib'] >= 3072
+
+
+def claim(db, rows):
+    for row in rows:
+        attempt = hashlib.sha256(row['module'].encode()).hexdigest()[:16]+'-'+str(time.time_ns())
+        db.execute('BEGIN IMMEDIATE')
+        changed = db.execute("UPDATE jobs SET state='collecting',attempt=? WHERE module=? AND state='pending'",
+                             (attempt, row['module'])).rowcount
+        db.commit()
+        if changed:
+            return row, attempt
+
+
+def launch_spec(manifest, root, row, attempt):
+    repo = Path(manifest['repo']); scratch = root/'worker-runtime'/attempt
+    output = root/'attempts'/attempt
+    env = {k: v for k,v in os.environ.items() if not k.startswith('API_RELATION_')}
+    env.pop('PYTEST_ADDOPTS', None); env.pop('PYTEST_PLUGINS', None)
+    env.update(PYTHONPATH=':'.join([manifest['plugin_root'], str(Path(__file__).parent), *manifest.get('dependency_paths', []), str(repo/'test'), str(repo)]),
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTORCH_TESTING_DEVICE_ONLY_FOR=manifest['device_filter'],
+        CUDA_VISIBLE_DEVICES='0', OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', MAX_JOBS='2',
+        TORCHINDUCTOR_COMPILE_THREADS='2', PYTORCH_NUM_PYTEST_RERUNS='0',
+        RELATION_CAPTURE_ATTEMPT=str(output), RELATION_RESUME_SELECTION=str(root/'selections'/(attempt+'.json')))
+    for name, part in [('TMPDIR','tmp'), ('TORCHINDUCTOR_CACHE_DIR','inductor'),
+                       ('TRITON_CACHE_DIR','triton'), ('TORCH_EXTENSIONS_DIR','extensions'), ('XDG_CACHE_HOME','cache')]:
+        path = scratch/part; path.mkdir(parents=True, exist_ok=True); env[name] = str(path)
+    prefix = Path(manifest['python']).parent.parent
+    env['PATH'] = str(prefix/'bin')+':'+env.get('PATH','')
+    if (prefix/'bin/nvcc').exists():
+        env.update(CUDA_HOME=str(prefix), CUDACXX=str(prefix/'bin/nvcc'))
+        env['TORCH_CUDA_ARCH_LIST'] = manifest['cuda_capability']
+        headers = list(prefix.glob('targets/*/include/cuda_runtime.h'))
+        if headers: env['CPATH'] = str(headers[0].parent)+':'+env.get('CPATH','')
+    cmd = [manifest['python'], '-m', 'pytest', row['source'], '-q', '--tb=no', '--no-header',
+           '--continue-on-collection-errors', '-p', 'api_test_relations.pytest_plugin', '-p', 'retained_selection',
+           '--api-relations-out', str(output), '--api-relations-repo', str(repo),
+           '--api-relations-catalog', manifest['catalog'], '--api-relations-label', 'accelerator/cuda',
+           '--api-relations-child-wait', '120', '--basetemp', str(scratch/'pytest')]
+    if row['runner'] == 'doctests':
+        cmd[3] = str(repo/'torch')
+        cmd += ['-p', 'relation_doctest_plugin', '-o', 'python_files=__relation_no_ordinary_tests__',
+                '--ignore-glob', '*distributed*', '--ignore', str(repo/'torch/_vendor')]
+        env['TORCH_DOCTEST_CUDA'] = '1'; env.pop('TORCH_DOCTEST_DISTRIBUTED', None)
+        if manifest.get('doctest_onnx'): env['TORCH_DOCTEST_ONNX'] = '1'
+        else:
+            cmd += ['--ignore', str(repo/'torch/onnx')]; env.pop('TORCH_DOCTEST_ONNX', None)
+    return cmd, env, output
+
+
+def attempt_processes(worker):
+    expected = ('RELATION_CAPTURE_ATTEMPT='+worker['output']).encode()
+    found = {}
+    if live(worker): found[worker['pid']] = worker
+    for path in Path('/proc').iterdir():
+        if not path.name.isdigit(): continue
+        try:
+            if expected in (path/'environ').read_bytes().split(b'\0'):
+                item = proc(int(path.name))
+                if item and item['state'] != 'Z': found[item['pid']] = item
+        except OSError: pass
+    return found
+
+
+def quiesce_attempt(worker, timeout=10):
+    """Ask live instrumented processes to commit and block new record callbacks."""
+    folder=Path(worker['shards']); token=str(time.time_ns())
+    save(folder/'checkpoint-request.json',{'token':token,'requested_at':time.time()})
+    deadline=time.monotonic()+timeout; stable_since=None; previous=None
+    acknowledged=[];missing=[]
+    while True:
+        states={}
+        for path in (folder/'checkpoints').glob('*.json'):
+            try:
+                state=read(path); actual=proc(state['pid'])
+                if actual and actual['state']!='Z':states[state['pid']]=state
+            except (ValueError,OSError,KeyError):continue
+        missing=[pid for pid,state in states.items() if state.get('state')!='closed' and (state.get('request')!=token or state.get('state')!='quiesced')]
+        if live(worker) and worker['pid'] not in states:missing.append(worker['pid'])
+        acknowledged=[pid for pid,state in states.items() if state.get('state')=='closed' or (state.get('request')==token and state.get('state')=='quiesced')]
+        census=tuple(sorted(states))
+        if not missing and census==previous:
+            stable_since=stable_since or time.monotonic()
+            if time.monotonic()-stable_since>=1:break
+        else:stable_since=None
+        previous=census
+        if time.monotonic()>=deadline:break
+        time.sleep(.2)
+    report={'token':token,'acknowledged':acknowledged,'missing':missing,'at':time.time(),
+            'complete_for_registered_live_writers':not missing}
+    save(folder/'checkpoint-barrier.json',report)
+    return report
+
+
+def terminate_attempt(worker):
+    worker['checkpoint_barrier'] = quiesce_attempt(worker)
+    found = attempt_processes(worker)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for item in found.values():
+            if live(item):
+                try: os.kill(item['pid'], sig)
+                except ProcessLookupError: pass
+        if sig == signal.SIGTERM and found: time.sleep(1)
+    return sorted(found)
+
+

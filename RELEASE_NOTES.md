@@ -1,3 +1,11 @@
+# 0.1.6 — Incremental single-database runner
+
+Add transactional append to the normalized single_database/1 baseline. Completed identities, including zero-observation tests and tests with existing gaps, are excluded before execution and rejected again at merge if a new phase/relationship names them. New rows are independently checked against raw shards and the destination. Replacing an interrupted instance requires the new observations to contain every prior positive API/phase/alias tuple; otherwise rollback and preserve raw evidence. Original completed provenance remains unchanged.
+
+The cooperating CUDA runner in scripts/run_single_database.py uses one writer and at most four distinct module workers. It preserves per-attempt selection and process/task boundary evidence inside the database. Verified raw output and that attempt's private compiler/temp caches are removed after exit; unresolved merges stop dispatch. No full baseline snapshots are copied. Database writes use a separate zero-byte lock file to avoid DrvFS/Windows conflicts with SQLite locks. Interrupted phase ownership is recorded before termination so finally blocks cannot promote it to completed.
+
+Limits remain explicit: the runner uses a prepared manifest and CUDA resource policy; it is not an automatic backend adapter. Existing positive evidence cannot prove zero omissions. The append command targets single_database/1, while compact's dictionary-view format remains a separate per-run export format. Neither command silently converts between formats.
+
 # 0.1.5 — Script-verified single-database retention
 
 New post-exit `compact --out RUN --database FILE` reconstructs all shards and child receipts without copying the raw directory. Independent raw-row checks reject conflicting ownership, paths, aliases, phases or first sites. Dictionary encoding removes repeated relation strings while a `relations` view preserves the query interface. Every merged table is compared in both directions against the compact database; foreign keys and integrity are checked before commit and integrity is checked again after reopening the committed file.

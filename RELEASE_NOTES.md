@@ -1,3 +1,9 @@
+# 0.1.5 — Script-verified single-database retention
+
+New post-exit `compact --out RUN --database FILE` reconstructs all shards and child receipts without copying the raw directory. Independent raw-row checks reject conflicting ownership, paths, aliases, phases or first sites. Dictionary encoding removes repeated relation strings while a `relations` view preserves the query interface. Every merged table is compared in both directions against the compact database; foreign keys and integrity are checked before commit and integrity is checked again after reopening the committed file.
+
+Only after exclusive publication, fsync, unchanged-source checks and dead-producer checks does the script delete the disposable run directory. Verification failure preserves the originals. Cleanup errors are reported as incomplete, with the verified database retained. Manifests, source metadata, hashes and verification receipt live inside that database. Existing destination files, nested destinations, symlinks, repository roots and unknown top-level files are refused. No AI decision is involved and no tests are rerun. This command handles one completed or interrupted run; cross-run append and scheduler integration remain separate work. Capture gaps are retained, not interpreted as zero omissions.
+
 # 0.1.4 — Periodic durable relationship checkpoints
 
 Each instrumented process commits buffered relations every second, including while a test phase is still running. The internal writer has no test owner or profiling guard; record owners, aliases and first call sites are captured by the original callback. Database access and buffer changes share a process-local lock. WAL transactions use synchronous=FULL; buffers clear only after a successful commit and survive rollback. Unchanged registry snapshots are not rewritten every interval.

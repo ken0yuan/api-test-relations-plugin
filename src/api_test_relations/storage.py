@@ -108,7 +108,7 @@ def drain_children(folder,timeout=120,on_tick=None):
 
 def query(args):
     root=args.out.resolve();published=(root/'storage.json').exists()
-    path=root/('relations-published.sqlite' if published else 'relations.sqlite')
+    path=root if root.is_file() else root/('relations-published.sqlite' if published else 'relations.sqlite')
     db=sqlite3.connect(path.as_uri()+'?mode=ro'+('&immutable=1' if published else ''),uri=True)
     ids=[r[0] for r in db.execute('SELECT api_id FROM apis WHERE name=? OR api_id=?',(args.api,args.api))]
     tests={}

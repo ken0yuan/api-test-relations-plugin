@@ -18,7 +18,8 @@ api-test-relations-plugin/
 │   └── limitations.md               # 能力边界、已知缺陷
 ├── src/api_test_relations/
 │   ├── pytest_plugin.py             # 显式启用、测试源码清单、结束时合并
-│   ├── cli.py                       # doctor / query / status / audit / settle
+│   ├── cli.py                       # doctor / query / status / audit / compact / settle
+│   ├── retention.py                 # 脚本逐条核验、单库压缩、成功后自动删除本次原件
 │   ├── settle.py                    # 进程退出后，从原始证据生成新汇总
 │   ├── storage.py                   # SQLite 分片合并、子进程回执、API 查询
 │   ├── recovery.py                  # 已退出进程的热日志恢复与原证据保留
@@ -50,7 +51,7 @@ api-test-relations-plugin/
 在服务器**原有测试环境**中安装，以下安装不会依赖或替换 torch：
 
 ```bash
-python -m pip install ./api_test_relations-0.1.2-py3-none-any.whl
+python -m pip install ./api_test_relations-0.1.5-py3-none-any.whl
 api-test-relations doctor
 ```
 
@@ -79,19 +80,22 @@ python -m pytest test/YOUR_EXISTING_NPU_TEST.py \
 
 ## 查询
 
-pytest 的 `sessionfinish` 发生在解释器退出之前，长期存活的子进程可能随后才写入分片或回执。等待 pytest 和相关子进程退出后，推荐先生成最终汇总：
+pytest 的 `sessionfinish` 发生在解释器退出之前，长期存活的子进程可能随后才写入分片或回执。等待 pytest 和相关子进程退出后，执行下列命令。**核验由脚本执行，不需要 AI 审批；通过后自动删除 `run-001` 整个插件输出目录，只留数据库。**
 
 ```bash
-api-test-relations settle --out /data/api-relations/run-001 \
-  --destination /data/api-relations/run-001-final
+api-test-relations compact --out /data/api-relations/run-001 \
+  --database /data/api-relations/relations.sqlite
 ```
 
-`settle` 不执行测试、不覆盖原目录；复制原始证据并重建汇总，记录来源和校验值。原始 gap 保留，过时的派生状态重新计算；空分片明确记为缺口。仍有生产者 PID 存在时拒绝执行，不会擅自终止进程。后续查询可使用 `run-001-final`。
+脚本从全部原始分片和子进程回执重新合并，逐条核对测试身份、源码路径、阶段、API、别名与首次调用点；冲突会阻止删除。再对合并库与压缩库所有数据表做双向差集比较，并检查 SQLite 完整性和外键，提交并重新打开验证后才清理。重复字符串字典化，关系内容没有抽样或删减；gap、阶段状态、源码元数据及校验记录保存在同一个库内。
+
+生产者仍在运行、文件变化、数据库错误、未知顶层文件或软链接都会阻止清理。目标必须是不存在的新文件且位于运行目录外；本命令暂不负责多个运行的追加合并或调度续跑。失败时保留原件；若验证通过但删除发生文件系统错误，库仍有效，返回 `cleanup=incomplete`。机器在发布后突然断电可能留下已验证库和原件两份，应先检查库内 `retention_receipt`。不删除运行目录以外的编译缓存、游戏缓存或个人文件。
+
+这证明合并与压缩保持已有记录，不证明采集阶段没有遗漏。需要长期保留原始证据时仍可显式使用旧 `settle --out RUN --destination NEW`；它复制证据，不节约空间。`audit` 仍面向清理前的运行目录。
 
 ```bash
-api-test-relations status --out /data/api-relations/run-001
-api-test-relations query --out /data/api-relations/run-001 --api torch.Tensor.fill_ --json fill-relations.json
-api-test-relations audit --out /data/api-relations/run-001
+api-test-relations status --out /data/api-relations/relations.sqlite
+api-test-relations query --out /data/api-relations/relations.sqlite --api torch.Tensor.fill_ --json fill-relations.json
 ```
 
 返回完整参数化 nodeid、`pytorch/` 开头的测试文件、阶段、API ID、同一对象的别名、首个调用点和采集缺口。未观测到关系不等于没有测试调用该 API；`capture_finished` 表示采集会话收尾，不是零遗漏声明。

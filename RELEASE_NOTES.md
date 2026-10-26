@@ -1,3 +1,11 @@
+# 0.1.4 — Periodic durable relationship checkpoints
+
+Each instrumented process commits buffered relations every second, including while a test phase is still running. The internal writer has no test owner or profiling guard; record owners, aliases and first call sites are captured by the original callback. Database access and buffer changes share a process-local lock. WAL transactions use synchronous=FULL; buffers clear only after a successful commit and survive rollback. Unchanged registry snapshots are not rewritten every interval.
+
+Checkpoint status is available in shards/checkpoints/<pid>.json. A cooperating runner may atomically write shards/checkpoint-request.json with a unique token; each writer commits pending observations and blocks further record callbacks before acknowledging quiesced with that token. Wait for acknowledgements before termination. Missing acknowledgements are incomplete capture, never proof of zero calls. Normal phase/session end still flushes; interrupted phases never become completed just because their relations were saved.
+
+These changes preserve committed observations after SIGKILL; unexpected power loss, SIGKILL before the next commit, a GIL held indefinitely by native code, or storage failure can still prevent the latest uncommitted batch being saved. Full zero-omission coverage is not claimed. Existing completed baseline observations are retained with their original version, not retroactively repaired.
+
 # 0.1.3 — Exact-identity performance optimization
 
 Native conservative rejection avoids Python callbacks for unrelated functions, but dirty bindings always resolve before rejection. Native version snapshots track dictionaries, object classes and MRO; unrelated namespace changes no longer rebuild the full ledger. Dependency-topology changes force rebuilding even when the current callable stays identical. Historical callable references and aliases remain observable.

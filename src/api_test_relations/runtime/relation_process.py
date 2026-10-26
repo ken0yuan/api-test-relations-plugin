@@ -46,7 +46,8 @@ def environment(context,base,explicit=False):
 
 def register_task(plugin,context):
     node=context['nodeid']
-    plugin.db.execute('INSERT OR IGNORE INTO tests VALUES (?,?)',(node,node.split('::')[0]));plugin.db.commit()
+    with plugin.lock:
+        plugin.db.execute('INSERT OR IGNORE INTO tests VALUES (?,?)',(node,node.split('::')[0]));plugin.db.commit()
 
 def run_owned(context,function,args,kwargs):
     global TASK_CONTEXT

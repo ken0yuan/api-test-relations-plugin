@@ -87,6 +87,7 @@ def pytest_unconfigure(config):
     if not state: return
     observer = state['observer']
     if observer is not None:
+        observer.stop_checkpoints()
         observer.bridge.close()
         if observer.collector.enabled: observer.collector.close()
         observer.db.close()

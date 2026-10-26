@@ -21,3 +21,5 @@
 pytest 结束钩子的汇总可能早于子进程最终落盘。0.1.2 提供进程退出后的 `settle` 重汇总；应查询新目录。它可以补入已落盘的迟到关系和回执，但无法恢复子进程未提交的调用；缺少完成回执、空分片仍保留为 gap。`capture_finished` 与 gap 数必须同时查看，不能把缺少回执直接认定为某个 API 已遗漏。
 
 0.1.3 retains opcode protection and the CPython 3.11 adapter requirement. Native code corrupting dictionary versions or bypassing both trace/profile remains outside the coverage guarantee. No full-run zero-omission claim is made.
+
+0.1.4 每个接管进程默认每秒提交一次，记录归属与阶段完成标记分开。受控超时应先请求 checkpoint 并等待 quiesced 回执；突然 SIGKILL、进程长时间持有 GIL 或存储故障，仍可能丢失尚未提交的最后一批，不能将定期提交描述为绝对零损失。错误状态保存在 shards/checkpoints；事务失败会保留批次重试。

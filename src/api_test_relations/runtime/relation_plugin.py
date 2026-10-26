@@ -21,9 +21,10 @@ class RelationPlugin:
         self.pid=os.getpid();self.main_thread=threading.get_ident()
         folder=Path(os.environ['API_RELATION_SHARDS']);folder.mkdir(parents=True,exist_ok=True)
         suffix='-'+child_context['token'] if child_context else ''
-        self.db=sqlite3.connect(folder/(str(self.pid)+suffix+'.sqlite'))
+        self.db=sqlite3.connect(folder/(str(self.pid)+suffix+'.sqlite'), check_same_thread=False)
         self.db.executescript('''
 PRAGMA journal_mode=WAL;
+PRAGMA synchronous=FULL;
 CREATE TABLE tests(nodeid TEXT PRIMARY KEY,file TEXT);
 CREATE TABLE phases(nodeid TEXT,phase TEXT,state TEXT,PRIMARY KEY(nodeid,phase));
 CREATE TABLE relations(nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(nodeid,phase,api_id));
@@ -35,6 +36,7 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         cat=json.loads(Path(os.environ['API_RELATION_CATALOG']).read_text())
         self.registry=Registry(cat,torch,excluded=json.loads(os.environ.get('API_RELATION_EXCLUDE','[]')))
         self.pending={};self.gaps=set();self.processes={};self.lock=threading.RLock()
+        self._saved_registry=None
         self.paths={};self.tokens={};self.collector=Collector(self.registry,self.record,self.gap)
         self.db.execute('INSERT INTO meta VALUES (?,?)',('collector','exact_identity_relations_v4'))
         self.child_context=child_context
@@ -48,6 +50,8 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         from relation_process import ProcessBridge
         self.bridge=ProcessBridge(self)
         if child_context:self.child_token=self.collector.enter((node,phase))
+        from relation_checkpoint import Checkpoints
+        self.checkpoints=Checkpoints(self)
 
     def node(self,item):
         _,sep,suffix=item.nodeid.partition('::')
@@ -67,27 +71,40 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
                 self.pending.setdefault((*owner,aid),(ids,site))
 
     def flush(self):
-        if os.getpid()!=self.pid or threading.get_ident()!=self.main_thread:return
+        if os.getpid()!=self.pid:return
+        # All DB access and pending mutation share this lock. A failed commit
+        # rolls back without discarding the original first-site/alias records.
         with self.lock:
-            pending=self.pending;self.pending={}
-            gaps=self.gaps;self.gaps=set()
-            processes=[(token,*row) for token,row in self.processes.items()]
-        rows=[]
-        for (node,phase,aid),(aliases,(file,line)) in pending.items():
-            if file not in self.paths:self.paths[file]=repo_path(file,self.repo)
-            rows.append((node,phase,aid,json.dumps(aliases),json.dumps([self.paths[file],line])))
-        self.db.executemany('INSERT OR IGNORE INTO relations VALUES (?,?,?,?,?)',rows)
-        self.db.executemany('INSERT OR IGNORE INTO gaps VALUES (?,?,?)',gaps)
-        self.db.executemany('INSERT OR REPLACE INTO registry VALUES (?,?)',self.registry.status.items())
-        self.db.executemany('INSERT OR REPLACE INTO processes VALUES (?,?,?,?,?)',processes)
-        self.db.commit()
+            rows=[]
+            for (node,phase,aid),(aliases,(file,line)) in self.pending.items():
+                if file not in self.paths:self.paths[file]=repo_path(file,self.repo)
+                rows.append((node,phase,aid,json.dumps(aliases),json.dumps([self.paths[file],line])))
+            try:
+                self.db.executemany('INSERT OR IGNORE INTO relations VALUES (?,?,?,?,?)',rows)
+                self.db.executemany('INSERT OR IGNORE INTO gaps VALUES (?,?,?)',self.gaps)
+                status=self.registry.status
+                if status is not self._saved_registry:
+                    self.db.executemany('INSERT OR REPLACE INTO registry VALUES (?,?)',list(status.items()))
+                self.db.executemany('INSERT OR REPLACE INTO processes VALUES (?,?,?,?,?)',[(token,*row) for token,row in self.processes.items()])
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+            self._saved_registry=status
+            self.pending.clear();self.gaps.clear()
+
+    def stop_checkpoints(self):
+        writer=getattr(self,'checkpoints',None)
+        if writer is not None:writer.close()
 
     @pytest.hookimpl(trylast=True)
     def pytest_collection_modifyitems(self,session,config,items):
-        for item in items:
-            if not Path(item.path).resolve().is_relative_to(self.repo):
-                raise pytest.UsageError('Captured tests must be inside --api-relations-repo: '+str(item.path))
-            self.db.execute('INSERT OR IGNORE INTO tests VALUES (?,?)',(self.node(item),repo_path(item.path,self.repo)))
+        with self.lock:
+            for item in items:
+                if not Path(item.path).resolve().is_relative_to(self.repo):
+                    raise pytest.UsageError('Captured tests must be inside --api-relations-repo: '+str(item.path))
+                self.db.execute('INSERT OR IGNORE INTO tests VALUES (?,?)',(self.node(item),repo_path(item.path,self.repo)))
+            self.db.commit()
         self.registry.refresh();self.flush()
 
     def pytest_collectreport(self,report):
@@ -97,13 +114,15 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
 
     def begin(self,item,phase):
         node=self.node(item)
-        self.db.execute('INSERT OR REPLACE INTO phases VALUES (?,?,?)',(node,phase,'entered'));self.db.commit()
+        with self.lock:
+            self.db.execute('INSERT OR REPLACE INTO phases VALUES (?,?,?)',(node,phase,'entered'));self.db.commit()
         self.tokens[phase]=self.collector.enter((node,phase))
 
     def end(self,item,phase):
         self.collector.leave(self.tokens.pop(phase))
         self.flush()
-        self.db.execute('INSERT OR REPLACE INTO phases VALUES (?,?,?)',(self.node(item),phase,'closed'));self.db.commit()
+        with self.lock:
+            self.db.execute('INSERT OR REPLACE INTO phases VALUES (?,?,?)',(self.node(item),phase,'closed'));self.db.commit()
 
     @pytest.hookimpl(hookwrapper=True,tryfirst=True)
     def pytest_runtest_setup(self,item):
@@ -124,15 +143,19 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         finally:self.end(item,'teardown')
 
     def pytest_sessionfinish(self,session,exitstatus):
+        self.stop_checkpoints()
         self.bridge.close();self.collector.close();self.flush()
         # Execution completion, NOT pytest result or exit status.
         self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',('session_finished','true'));self.db.commit()
+        self.checkpoints.publish('closed')
 
     def finish_child(self):
         self.collector.leave(self.child_token)
+        self.stop_checkpoints()
         self.bridge.close();self.collector.close();self.flush()
         self.db.execute("UPDATE phases SET state='closed'")
         self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',('session_finished','true'));self.db.commit()
+        self.checkpoints.publish('closed')
 
 
 def pytest_configure(config):

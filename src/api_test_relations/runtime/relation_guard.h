@@ -78,6 +78,10 @@ static int guarded_trace(PyObject *capsule, PyFrameObject *frame, int event, PyO
     RelationGuard *g=guard_data(capsule);
     int result=0;
     if (!g || !g->active) goto done;
+    if (event==PyTrace_OPCODE && !g->trace) {
+        /* Keep every-opcode rearming; no client needs frame/flag lookups here. */
+        result=guard_rearm(capsule);goto done;
+    }
     if (guard_frame(g,frame)<0 || guard_rearm(capsule)<0) {result=-1;goto done;}
     PyObject *opcode=PyDict_GetItem(g->frames,(PyObject *)frame);
     if (g->trace && (event!=PyTrace_OPCODE || opcode==Py_True)) {
@@ -98,8 +102,8 @@ done:
 }
 
 static PyObject *install_guard(PyObject *self, PyObject *args) {
-    PyObject *callback,*eval_guard;
-    if (!PyArg_ParseTuple(args,"OO",&callback,&eval_guard)) return NULL;
+    PyObject *callback,*eval_guard,*filter=Py_None;
+    if (!PyArg_ParseTuple(args,"OO|O",&callback,&eval_guard,&filter)) return NULL;
     PyObject *existing=find_guard();
     if (existing) {
         if (guard_rearm(existing)<0) return NULL;
@@ -113,7 +117,7 @@ static PyObject *install_guard(PyObject *self, PyObject *args) {
     PyObject *capsule=PyCapsule_New(g,"api_relation_guard",guard_destroy);
     if (!capsule) {PyMem_Free(g);return NULL;}
     PyThreadState *ts=PyThreadState_Get();
-    g->observer=PyTuple_Pack(2,callback,eval_guard);g->frames=PyDict_New();
+    g->observer=PyTuple_Pack(3,callback,eval_guard,filter);g->frames=PyDict_New();
     g->profile=ts->c_profilefunc;g->profile_obj=Py_XNewRef(ts->c_profileobj);
     g->trace=ts->c_tracefunc;g->trace_obj=Py_XNewRef(ts->c_traceobj);
     if (!g->observer || !g->frames) {Py_DECREF(capsule);return NULL;}

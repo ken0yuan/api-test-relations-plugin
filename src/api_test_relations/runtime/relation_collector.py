@@ -13,6 +13,9 @@ import types
 from _relation_identity import frame_function, method_definition, namespace_version, namespaces_changed, set_profile, current_profile, install_guard, remove_guard, profile_client, trace_client, guard_intact, guard_available
 
 from relation_context import OWNER
+from _relation_identity import make_filter, filter_dirty
+
+_MISSING = object()
 
 
 class Registry:
@@ -21,6 +24,7 @@ class Registry:
         self.excluded=set(excluded)
         self.python={};self.cfunc={};self.descriptor={};self.status={};self.keepalive=[]
         self.code=set();self.names={};self.seen=set();self.namespaces={};self.versions=()
+        self._lookups={};self._watchers={};self.fast_state=[]
         self._lock=threading.RLock();self._refreshing=False
         self.refresh()
 
@@ -28,7 +32,29 @@ class Registry:
         # Build privately; a failed refresh cannot publish half a registry.
         with self._lock:
             if self._refreshing:return
-            if not force and self.versions and self.module_count==len(sys.modules) and not namespaces_changed(self.namespace_objects,self.versions):return
+            if not force and self.versions:
+                if not filter_dirty(self.fast_state):return
+                versions=tuple(namespace_version(n) for n in self.namespace_objects)
+                dirty={id(n) for n,old,new in zip(self.namespace_objects,self.versions,versions)
+                       if type(old) is tuple and (old[0]!=new[0] or old[1] is not new[1])}
+                dirty.update(id(n) for n,old,new in zip(self.namespace_objects,self.versions,versions)
+                             if type(old) is not tuple and old!=new)
+                affected=set().union(*(self._watchers.get(key,set()) for key in dirty))
+                # Dependency topology can change even if the resolved object is
+                # currently identical (a new base class may be rebound later).
+                changed=any(type(old) is tuple and old[1] is not new[1]
+                            for old,new in zip(self.versions,versions))
+                for key in affected:
+                    owner,part,previous=self._lookups[key]
+                    try:current=inspect.getattr_static(owner,part)
+                    except (AttributeError,TypeError):current=_MISSING
+                    if current is not previous:
+                        changed=True;break
+                if not changed:
+                    # Only dictionary contents unrelated to a catalog lookup changed.
+                    # Publish pre-read versions: concurrent changes are checked again.
+                    self.versions=versions;self.module_count=len(sys.modules)
+                    self._publish_filter();return
             self._refreshing=True
             try:
                 stage=object.__new__(Registry);stage.__dict__.update(self.__dict__)
@@ -37,13 +63,36 @@ class Registry:
                 stage.descriptor={key:list(value) for key,value in self.descriptor.items()}
                 for name in ('status','names','namespaces'):setattr(stage,name,dict(getattr(self,name)))
                 stage.code=set(self.code);stage.seen=set(self.seen);stage.keepalive=list(self.keepalive)
+                stage._lookups=dict(self._lookups)
+                stage._watchers={key:set(value) for key,value in self._watchers.items()}
                 stage._refresh(force)
                 self.__dict__.update(stage.__dict__)
+                self._publish_filter()
             finally:self._refreshing=False
+
+    def _publish_filter(self):
+        # All thread guards share this list. Slice replacement holds the GIL.
+        self.fast_state[:]=[make_filter(self.python,self.cfunc,self.descriptor,self.namespace_objects,self.versions)]
+
+    def _lookup(self,value,part,observed):
+        key=(id(value),part)
+        cls=type(value)
+        dependencies=[value]
+        if issubclass(cls,type):dependencies.extend(type.__getattribute__(value,'__mro__'))
+        dependencies.extend(type.__getattribute__(cls,'__mro__'))
+        for namespace in dependencies:
+            self.namespaces[id(namespace)]=namespace
+            observed.setdefault(id(namespace),namespace_version(namespace))
+            self._watchers.setdefault(id(namespace),set()).add(key)
+        try:result=inspect.getattr_static(value,part)
+        except (AttributeError,TypeError):
+            self._lookups[key]=(value,part,_MISSING)
+            raise
+        self._lookups[key]=(value,part,result)
+        return result
 
     def _refresh(self,force=False):
         versions=tuple(namespace_version(n) for n in self.namespaces.values())
-        if not force and self.versions and versions==self.versions and self.module_count==len(sys.modules):return
         observed={id(n):version for n,version in zip(self.namespaces.values(),versions)}
         module_count=len(sys.modules)
         # Historical callable objects remain known for aliases captured before rebinding.
@@ -63,10 +112,7 @@ class Registry:
                 for part in parts[1:]:
                     # isinstance may read a proxy's __class__ and run user code.
                     # These built-in base types have no custom instance/subclass hooks.
-                    if issubclass(type(value),(types.ModuleType,type)):
-                        self.namespaces[id(value)]=value
-                        observed.setdefault(id(value),namespace_version(value))
-                    owner=value;value=inspect.getattr_static(value,part)
+                    owner=value;value=self._lookup(value,part,observed)
                 if issubclass(type(value),classmethod):value=classmethod.__dict__['__func__'].__get__(value)
                 elif issubclass(type(value),staticmethod):value=staticmethod.__dict__['__func__'].__get__(value)
             except (AttributeError,TypeError):
@@ -144,7 +190,7 @@ class Collector:
     def _set_raw(self,callback):
         previous=getattr(self.local,'internal',False);self.local.internal=True
         try:
-            if callback==self.dispatch:install_guard(callback,self.evaluation_guard)
+            if callback==self.dispatch:install_guard(callback,self.evaluation_guard,self.registry.fast_state)
             else:
                 remove_guard()
                 if callback is None or callable(callback):self.raw_set(callback)
@@ -157,7 +203,7 @@ class Collector:
         owner=OWNER.get()
         if owner is not None and event in ('call','c_call'):
             try:
-                if len(sys.modules)!=self.registry.module_count or namespaces_changed(self.registry.namespace_objects,self.registry.versions):
+                if filter_dirty(self.registry.fast_state):
                     self.registry.refresh()
                 ids=self.registry.match(frame,event,arg)
                 if ids:
@@ -182,7 +228,7 @@ class Collector:
         try:
             remove_guard()
             try:setter(callback)
-            finally:install_guard(self.dispatch,self.evaluation_guard)
+            finally:install_guard(self.dispatch,self.evaluation_guard,self.registry.fast_state)
         finally:self.local.internal=previous
 
     def _run_context(self,context,fn,args,kwargs):

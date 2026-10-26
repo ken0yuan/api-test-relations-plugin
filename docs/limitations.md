@@ -19,3 +19,5 @@
 独立回归使用人工小台账和模拟 torch/torch_npu 命名空间，另有真实 x86 PyTorch/CUDA 小样本及上游测试对照；这不等价于真实昇腾算子验收。
 
 pytest 结束钩子的汇总可能早于子进程最终落盘。0.1.2 提供进程退出后的 `settle` 重汇总；应查询新目录。它可以补入已落盘的迟到关系和回执，但无法恢复子进程未提交的调用；缺少完成回执、空分片仍保留为 gap。`capture_finished` 与 gap 数必须同时查看，不能把缺少回执直接认定为某个 API 已遗漏。
+
+0.1.3 retains opcode protection and the CPython 3.11 adapter requirement. Native code corrupting dictionary versions or bypassing both trace/profile remains outside the coverage guarantee. No full-run zero-omission claim is made.

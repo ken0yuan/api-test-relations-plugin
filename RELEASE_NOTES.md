@@ -1,3 +1,11 @@
+# 0.1.3 — Exact-identity performance optimization
+
+Native conservative rejection avoids Python callbacks for unrelated functions, but dirty bindings always resolve before rejection. Native version snapshots track dictionaries, object classes and MRO; unrelated namespace changes no longer rebuild the full ledger. Dependency-topology changes force rebuilding even when the current callable stays identical. Historical callable references and aliases remain observable.
+
+Every-opcode profile rearming remains enabled. Only redundant per-opcode frame bookkeeping is skipped when there is no trace client. No sampling, API/test-specific exclusions, or reduction in child/thread attribution is introduced.
+
+51 regression and real CUDA integration checks passed. Three completed synthetic real-PyTorch cases retain all 11 exact relation keys, aliases and sites; new child receipt is complete, no gaps. The fourth new compiler-heavy synthetic case finishes in 37.5 seconds for the whole optimized run; the old run timed out at 180 seconds. This is not a universal throughput guarantee. Existing child-exit/native/class-call coverage boundaries remain; ARM/NPU is not hardware-validated.
+
 # 0.1.2 — 真实测试发现的收尾缺口
 
 真实 PyTorch 对照发现 pytest 的 sessionfinish 汇总早于部分子进程退出：一个运行的原始分片最终有 381 条关系，当次汇总只有 370 条。新增 `settle --out ORIGINAL --destination NEW`，等待生产者退出后，从原始分片和最终回执重新生成独立汇总；原目录保留。修复不依赖具体 API、测试文件或编译器名称。

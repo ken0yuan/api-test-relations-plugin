@@ -7,6 +7,8 @@
 #error "This identity adapter is for CPython 3.11; add a version adapter before using another interpreter."
 #endif
 
+static int filter_observation(PyObject *, PyFrameObject *, int, PyObject *);
+
 /* Enter Python observer code with a thread-local compiler evaluation guard.
  * The setter is supplied through a runtime capability, not a source offset.
  * It must be a C callable so its entry cannot itself be compiled.
@@ -14,6 +16,10 @@
 static int relation_profile(PyObject *state, PyFrameObject *frame, int event, PyObject *arg) {
     static const char *names[] = {"call", "exception", "line", "return", "c_call", "c_exception", "c_return", "opcode"};
     if (event < 0 || event > PyTrace_OPCODE) return 0;
+    if (PyTuple_GET_SIZE(state)>2) {
+        int needed=filter_observation(PyTuple_GET_ITEM(state,2),frame,event,arg);
+        if (needed<=0) return needed;
+    }
     PyObject *callback=PyTuple_GET_ITEM(state,0), *guard=PyTuple_GET_ITEM(state,1), *previous=NULL;
     if (guard != Py_None) {
         previous=PyObject_CallOneArg(guard,Py_None);
@@ -74,13 +80,27 @@ static PyObject *method_definition(PyObject *self, PyObject *arg) {
     Py_RETURN_NONE;
 }
 
-static PyObject *namespace_version(PyObject *self, PyObject *arg) {
+static PyObject *namespace_dict(PyObject *arg) {
     PyObject *dict = NULL;
     if (PyModule_Check(arg)) dict = PyModule_GetDict(arg);
     else if (PyType_Check(arg)) dict = ((PyTypeObject *)arg)->tp_dict;
-    if (dict && PyDict_Check(dict))
-        return PyLong_FromUnsignedLongLong(((PyDictObject *)dict)->ma_version_tag);
-    Py_RETURN_NONE;
+    else {PyObject **slot=_PyObject_GetDictPtr(arg); if (slot) dict=*slot;}
+    return dict;
+}
+
+static PyObject *namespace_version(PyObject *self, PyObject *arg) {
+    PyObject *dict=namespace_dict(arg);
+    unsigned long long version=dict ? ((PyDictObject *)dict)->ma_version_tag : 0;
+    PyObject *structure=PyType_Check(arg) ? ((PyTypeObject *)arg)->tp_mro : (PyObject *)Py_TYPE(arg);
+    return Py_BuildValue("KO",version,structure ? structure : Py_None);
+}
+
+static int namespace_dirty(PyObject *object, PyObject *version) {
+    PyObject *dict=namespace_dict(object);
+    if (!PyTuple_Check(version) || PyTuple_GET_SIZE(version)!=2) return 1;
+    PyObject *structure=PyType_Check(object) ? ((PyTypeObject *)object)->tp_mro : (PyObject *)Py_TYPE(object);
+    if ((structure ? structure : Py_None)!=PyTuple_GET_ITEM(version,1)) return 1;
+    return (dict ? ((PyDictObject *)dict)->ma_version_tag : 0)!=PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(version,0));
 }
 
 static PyObject *namespaces_changed(PyObject *self, PyObject *args) {
@@ -90,18 +110,110 @@ static PyObject *namespaces_changed(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_ValueError, "namespace/version length mismatch");return NULL;
     }
     for (Py_ssize_t i=0;i<PyTuple_GET_SIZE(objects);i++) {
-        PyObject *object=PyTuple_GET_ITEM(objects,i), *version=PyTuple_GET_ITEM(versions,i), *dict=NULL;
-        if (version == Py_None) continue;
-        if (PyModule_Check(object)) dict=PyModule_GetDict(object);
-        else if (PyType_Check(object)) dict=((PyTypeObject *)object)->tp_dict;
-        if (!dict || ((PyDictObject *)dict)->ma_version_tag != PyLong_AsUnsignedLongLong(version)) Py_RETURN_TRUE;
+        if (namespace_dirty(PyTuple_GET_ITEM(objects,i),PyTuple_GET_ITEM(versions,i))) Py_RETURN_TRUE;
     }
     Py_RETURN_FALSE;
+}
+
+typedef struct {
+    PyObject *object,*dict,*mro;
+    unsigned long long version;
+    int kind;
+} BindingVersion;
+typedef struct {
+    PyObject *python,*cfunc,*descriptor;
+    Py_ssize_t count;
+    BindingVersion *items;
+} BindingFilter;
+
+static void destroy_filter(PyObject *capsule) {
+    BindingFilter *f=PyCapsule_GetPointer(capsule,"relation_binding_filter");
+    if (!f) {PyErr_Clear();return;}
+    Py_XDECREF(f->python);Py_XDECREF(f->cfunc);Py_XDECREF(f->descriptor);
+    for (Py_ssize_t i=0;i<f->count;i++) {
+        Py_XDECREF(f->items[i].object);Py_XDECREF(f->items[i].dict);Py_XDECREF(f->items[i].mro);
+    }
+    PyMem_Free(f->items);PyMem_Free(f);
+}
+
+static PyObject *make_filter(PyObject *self, PyObject *args) {
+    PyObject *python,*cfunc,*descriptor,*objects,*versions;
+    if (!PyArg_ParseTuple(args,"O!O!O!O!O!",&PyDict_Type,&python,&PyDict_Type,&cfunc,
+                         &PyDict_Type,&descriptor,&PyTuple_Type,&objects,&PyTuple_Type,&versions)) return NULL;
+    if (PyTuple_GET_SIZE(objects)!=PyTuple_GET_SIZE(versions)) {
+        PyErr_SetString(PyExc_ValueError,"Mismatched binding snapshot");return NULL;
+    }
+    BindingFilter *f=PyMem_Calloc(1,sizeof(BindingFilter));
+    if (!f) return PyErr_NoMemory();
+    f->count=PyTuple_GET_SIZE(objects);
+    f->items=PyMem_Calloc(f->count+1,sizeof(BindingVersion));
+    if (!f->items) {PyMem_Free(f);return PyErr_NoMemory();}
+    PyObject *capsule=PyCapsule_New(f,"relation_binding_filter",destroy_filter);
+    if (!capsule) {PyMem_Free(f->items);PyMem_Free(f);return NULL;}
+    f->python=Py_NewRef(python);f->cfunc=Py_NewRef(cfunc);f->descriptor=Py_NewRef(descriptor);
+    for (Py_ssize_t i=0;i<f->count;i++) {
+        BindingVersion *v=&f->items[i];PyObject *version=PyTuple_GET_ITEM(versions,i);
+        v->object=Py_NewRef(PyTuple_GET_ITEM(objects,i));
+        v->dict=Py_XNewRef(namespace_dict(v->object));
+        v->kind=PyType_Check(v->object) ? 1 : (PyModule_Check(v->object) ? 0 : 2);
+        v->mro=Py_NewRef(PyTuple_GET_ITEM(version,1));version=PyTuple_GET_ITEM(version,0);
+        v->version=PyLong_AsUnsignedLongLong(version);
+        if (PyErr_Occurred()) {Py_DECREF(capsule);return NULL;}
+    }
+    return capsule;
+}
+
+static BindingFilter *get_filter(PyObject *state) {
+    if (!PyList_Check(state) || PyList_GET_SIZE(state)!=1) return NULL;
+    PyObject *capsule=PyList_GET_ITEM(state,0);
+    if (!PyCapsule_IsValid(capsule,"relation_binding_filter")) return NULL;
+    return PyCapsule_GetPointer(capsule,"relation_binding_filter");
+}
+
+static int binding_filter_dirty(BindingFilter *f) {
+    if (!f) return 1;
+    for (Py_ssize_t i=0;i<f->count;i++) {
+        BindingVersion *v=&f->items[i];
+        if (v->kind==2 && namespace_dict(v->object)!=v->dict) return 1;
+        if (v->dict && ((PyDictObject *)v->dict)->ma_version_tag!=v->version) return 1;
+        if (v->kind==1 && ((PyTypeObject *)v->object)->tp_mro!=v->mro) return 1;
+        if (v->kind!=1 && (PyObject *)Py_TYPE(v->object)!=v->mro) return 1;
+    }
+    return 0;
+}
+
+static PyObject *filter_dirty(PyObject *self,PyObject *state) {
+    return PyBool_FromLong(binding_filter_dirty(get_filter(state)));
+}
+
+/* Conservative exact-identity rejection only. A dirty binding always reaches
+ * Python resolution BEFORE a call can be rejected. Client profilers still see
+ * all events through guarded_profile, independently of this observer filter. */
+static int filter_observation(PyObject *filter, PyFrameObject *frame, int event, PyObject *arg) {
+    if (filter==Py_None) return 1;
+    if (event!=PyTrace_CALL && event!=PyTrace_C_CALL) return 0;
+    BindingFilter *f=get_filter(filter);
+    if (binding_filter_dirty(f)) return 1;
+    if (event==PyTrace_CALL) {
+        if (!frame->f_frame || !frame->f_frame->f_func) return 1;
+        return PyDict_Contains(f->python,(PyObject *)frame->f_frame->f_func);
+    }
+    if (!arg || !PyCFunction_Check(arg)) return 1;
+    PyObject *key=PyLong_FromVoidPtr(arg);
+    if (!key) return -1;
+    int found=PyDict_Contains(f->cfunc,key);Py_DECREF(key);
+    if (found) return found;
+    key=PyLong_FromVoidPtr(((PyCFunctionObject *)arg)->m_ml);
+    if (!key) return -1;
+    found=PyDict_Contains(f->descriptor,key);Py_DECREF(key);
+    return found;
 }
 
 #include "relation_guard.h"
 
 static PyMethodDef methods[] = {
+    {"make_filter", make_filter, METH_VARARGS, "Build immutable exact binding/version snapshot."},
+    {"filter_dirty", filter_dirty, METH_O, "Check native binding snapshot without Python traversal."},
     {"set_profile", set_profile, METH_VARARGS, "Install compiler-isolated observer trampoline."},
     {"current_profile", guard_current_profile, METH_NOARGS, "Current logical profiling callback."},
     {"install_guard", install_guard, METH_VARARGS, "Multiplex profiler with opcode guard."},

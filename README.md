@@ -112,6 +112,8 @@ api-test-relations query --out /data/api-relations/relations.sqlite --api torch.
 
 WSL 运行时，应将活动数据库、分片、临时/编译缓存、调度状态和日志全部放在 WSL 的 Linux 文件系统（例如 `/home/USER/api-relations/`），不要放到 `/mnt/c` 或 `/mnt/d`。按测试查询的大库应先创建 `CREATE INDEX IF NOT EXISTS observations_by_test ON observations(test_key)`；它只增加索引，不修改关系。Windows 端仅保留源码及静态入口。
 
+调度器为每个 attempt 创建 `/tmp/atr-<uid>/<token>` 短路径别名，指向该 attempt 私有的 `worker-runtime/.../tmp`。这使 `multiprocessing.resource_sharer` 创建的 Unix socket 地址保持足够短，避免长运行目录造成 `AF_UNIX path too long`，随后 DataLoader 一直等待队列结果。进程退出且入库核验成功后，仅删除核对归属的别名和私有目录。特殊上游 runner 缺少直接 Python 源码时，记录未执行边界；监督器接管已有 worker 时保留原 PID、分片和启动时间。详见[调度可靠性与验证范围](docs/scheduler-reliability.md)。
+
 ## ARM + 昇腾实机验收
 
 在插件源码目录、已配置好的 NPU 环境执行：

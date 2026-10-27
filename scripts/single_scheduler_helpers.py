@@ -55,6 +55,41 @@ def can_launch(resource):
     return resource['memory_available_mib'] >= 3072 and resource['gpu_free_mib'] is not None and resource['gpu_free_mib'] >= 3072
 
 
+def short_temp_alias(output, target):
+    """Short AF_UNIX address spelling, with data still in attempt-private scratch."""
+    base = Path('/tmp') / ('atr-' + str(os.getuid()))
+    if base.is_symlink(): raise ValueError('Unsafe short-temp parent')
+    base.mkdir(mode=0o700, exist_ok=True)
+    info = base.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('Short-temp parent must be private and owned by this user')
+    alias = base / hashlib.sha256(str(Path(output).absolute()).encode()).hexdigest()[:20]
+    target = Path(target).absolute(); target.mkdir(parents=True, exist_ok=True)
+    if alias.is_symlink():
+        if os.readlink(alias) != str(target): raise ValueError('Short-temp alias target changed')
+    elif alias.exists():
+        raise ValueError('Refusing to replace short-temp content')
+    else:
+        alias.symlink_to(target, target_is_directory=True)
+    return alias
+
+
+def cleanup_temp_alias(worker, scratch):
+    """Remove only this attempt's verified alias, never recursively delete /tmp."""
+    value = worker.get('temp_alias')
+    if not value: return  # Older adopted workers used the long scratch spelling.
+    alias = Path(value)
+    expected = Path('/tmp') / ('atr-' + str(os.getuid())) / hashlib.sha256(
+        str(Path(worker['output']).absolute()).encode()).hexdigest()[:20]
+    target = (Path(scratch) / 'tmp').absolute()
+    if alias != expected: raise ValueError('Invalid short-temp alias ownership')
+    if alias.is_symlink():
+        if os.readlink(alias) != str(target): raise ValueError('Short-temp alias target changed')
+        alias.unlink()
+    elif alias.exists():
+        raise ValueError('Short-temp alias was replaced by content')
+
+
 def claim(db, rows):
     for row in rows:
         attempt = hashlib.sha256(row['module'].encode()).hexdigest()[:16]+'-'+str(time.time_ns())
@@ -87,6 +122,10 @@ def launch_spec(manifest, root, row, attempt):
     for name, part in [('TMPDIR','tmp'), ('TORCHINDUCTOR_CACHE_DIR','inductor'),
                        ('TRITON_CACHE_DIR','triton'), ('TORCH_EXTENSIONS_DIR','extensions'), ('XDG_CACHE_HOME','cache')]:
         path = scratch/part; path.mkdir(parents=True, exist_ok=True); env[name] = str(path)
+    # multiprocessing.resource_sharer adds pymp-*/listener-* below TMPDIR.
+    # Long run/attempt names exceed sockaddr_un even with collection disabled.
+    alias = short_temp_alias(output, scratch/'tmp')
+    env['TMPDIR'] = str(alias); env['RELATION_TEMP_ALIAS'] = str(alias)
     prefix = Path(manifest['python']).parent.parent
     env['PATH'] = str(prefix/'bin')+':'+env.get('PATH','')
     if (prefix/'bin/nvcc').exists():

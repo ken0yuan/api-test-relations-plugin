@@ -27,7 +27,7 @@ PRAGMA journal_mode=WAL;
 PRAGMA synchronous=FULL;
 CREATE TABLE tests(nodeid TEXT PRIMARY KEY,file TEXT);
 CREATE TABLE phases(nodeid TEXT,phase TEXT,state TEXT,PRIMARY KEY(nodeid,phase));
-CREATE TABLE relations(nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(nodeid,phase,api_id));
+CREATE TABLE relations(nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(nodeid,phase,api_id,aliases));
 CREATE TABLE gaps(nodeid TEXT,phase TEXT,reason TEXT,PRIMARY KEY(nodeid,phase,reason));
 CREATE TABLE registry(api_id TEXT PRIMARY KEY,state TEXT);
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
@@ -67,8 +67,9 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
     def record(self,owner,ids,site):
         with self.lock:
             for aid in ids:
-                # Only the first evidence site is needed to prove a relation.
-                self.pending.setdefault((*owner,aid),(ids,site))
+                # First site per actually observed alias group, never an invented
+                # union of bindings seen in different processes or at other times.
+                self.pending.setdefault((*owner,aid,tuple(ids)),site)
 
     def flush(self):
         if os.getpid()!=self.pid:return
@@ -76,7 +77,7 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         # rolls back without discarding the original first-site/alias records.
         with self.lock:
             rows=[]
-            for (node,phase,aid),(aliases,(file,line)) in self.pending.items():
+            for (node,phase,aid,aliases),(file,line) in self.pending.items():
                 if file not in self.paths:self.paths[file]=repo_path(file,self.repo)
                 rows.append((node,phase,aid,json.dumps(aliases),json.dumps([self.paths[file],line])))
             try:

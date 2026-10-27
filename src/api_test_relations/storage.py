@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS apis(api_id TEXT PRIMARY KEY,name TEXT,language TEXT,
 CREATE TABLE IF NOT EXISTS jobs(module TEXT PRIMARY KEY,file TEXT,state TEXT,attempt TEXT);
 CREATE TABLE IF NOT EXISTS tests(job TEXT,nodeid TEXT,file TEXT,PRIMARY KEY(job,nodeid));
 CREATE TABLE IF NOT EXISTS phases(job TEXT,nodeid TEXT,phase TEXT,state TEXT,PRIMARY KEY(job,nodeid,phase));
-CREATE TABLE IF NOT EXISTS relations(job TEXT,nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(job,nodeid,phase,api_id));
+CREATE TABLE IF NOT EXISTS relations(job TEXT,nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(job,nodeid,phase,api_id,aliases,site));
+CREATE TABLE IF NOT EXISTS relation_sources(job TEXT,nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,shard TEXT,PRIMARY KEY(job,nodeid,phase,api_id,aliases,site,shard));
 CREATE INDEX IF NOT EXISTS by_api ON relations(api_id,nodeid);
 CREATE TABLE IF NOT EXISTS gaps(job TEXT,nodeid TEXT,phase TEXT,reason TEXT,PRIMARY KEY(job,nodeid,phase,reason));
 CREATE TABLE IF NOT EXISTS registry(job TEXT,api_id TEXT,state TEXT,PRIMARY KEY(job,api_id));
@@ -20,6 +21,17 @@ CREATE TABLE IF NOT EXISTS process_details(job TEXT,token TEXT,detail TEXT,PRIMA
 CREATE TABLE IF NOT EXISTS process_tasks(job TEXT,token TEXT,nodeid TEXT,phase TEXT,state TEXT,detail TEXT,PRIMARY KEY(job,token));
 CREATE TABLE IF NOT EXISTS retained(job TEXT,nodeid TEXT,source_root TEXT,source_snapshot TEXT,source_attempt TEXT,source_version TEXT,relation_rows INTEGER,PRIMARY KEY(job,nodeid));
 ''')
+    # Existing 0.1.7 summaries can be rebuilt from preserved raw shards. Widen
+    # the key without claiming to recover evidence already lost in an old DB.
+    key=[r[1] for r in sorted(db.execute('PRAGMA table_info(relations)'),key=lambda r:r[5]) if r[5]]
+    if key==['job','nodeid','phase','api_id']:
+        with db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('CREATE TABLE relations_v018(job TEXT,nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(job,nodeid,phase,api_id,aliases,site))')
+            db.execute('INSERT INTO relations_v018 SELECT * FROM relations')
+            db.execute('DROP TABLE relations')
+            db.execute('ALTER TABLE relations_v018 RENAME TO relations')
+            db.execute('CREATE INDEX by_api ON relations(api_id,nodeid)')
     return db
 
 def merge(db,job,folder,final=False):
@@ -43,7 +55,11 @@ def merge(db,job,folder,final=False):
                         if not node.startswith('pytorch/'):raise ValueError('invalid test path: '+node)
                         if not db.execute('SELECT 1 FROM tests WHERE job=? AND nodeid=?',(job,node)).fetchone():raise ValueError('owner missing')
                         if not db.execute('SELECT 1 FROM apis WHERE api_id=?',(aid,)).fetchone():raise ValueError('API outside ledger')
-                if rows:db.executemany('INSERT OR REPLACE INTO '+table+' VALUES ('+','.join('?' for _ in range(len(rows[0])+1))+')',[(job,*row) for row in rows])
+                if rows:
+                    operation='IGNORE' if table=='relations' else 'REPLACE'
+                    db.executemany('INSERT OR '+operation+' INTO '+table+' VALUES ('+','.join('?' for _ in range(len(rows[0])+1))+')',[(job,*row) for row in rows])
+                    if table=='relations':
+                        db.executemany('INSERT OR IGNORE INTO relation_sources VALUES (?,?,?,?,?,?,?)',[(job,*row,shard.name) for row in rows])
             flag=source.execute("SELECT value FROM meta WHERE key='session_finished'").fetchone()
             finished=finished or bool(role=='root' and flag and flag[0]=='true')
         finally:source.close()
@@ -112,10 +128,13 @@ def query(args):
     db=sqlite3.connect(path.as_uri()+'?mode=ro'+('&immutable=1' if published else ''),uri=True)
     ids=[r[0] for r in db.execute('SELECT api_id FROM apis WHERE name=? OR api_id=?',(args.api,args.api))]
     tests={}
+    has_sources=bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='relation_sources'").fetchone())
     for aid in ids:
         for job,node,phase,aliases,site in db.execute('SELECT job,nodeid,phase,aliases,site FROM relations WHERE api_id=? ORDER BY nodeid',(aid,)):
             entry=tests.setdefault((job,node),{'nodeid':node,'file':node.split('::')[0],'evidence':[],'capture_gaps':[]})
-            entry['evidence'].append({'api_id':aid,'phase':phase,'same_callable_aliases':json.loads(aliases),'first_site':json.loads(site)})
+            sources=[r[0] for r in db.execute('SELECT shard FROM relation_sources WHERE job=? AND nodeid=? AND phase=? AND api_id=? AND aliases=? AND site=? ORDER BY shard',
+                (job,node,phase,aid,aliases,site))] if has_sources else []
+            entry['evidence'].append({'api_id':aid,'phase':phase,'same_callable_aliases':json.loads(aliases),'first_site':json.loads(site),'source_shards':sources})
     for (job,node),entry in tests.items():
         entry['capture_gaps']=[r[0] for r in db.execute('SELECT reason FROM gaps WHERE job=? AND (nodeid=? OR nodeid=\'\')',(job,node))]
         prior=db.execute('SELECT source_root,source_version,source_attempt FROM retained WHERE job=? AND nodeid=?',(job,node)).fetchone()

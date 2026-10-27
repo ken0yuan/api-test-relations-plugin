@@ -72,6 +72,10 @@ def _raw_check(db, root):
                     if not db.execute('SELECT 1 FROM ' + table + ' WHERE job=? AND ' + where,
                                       ('pytest', *row)).fetchone():
                         raise ValueError('Raw/merged mismatch or conflicting shard rows: ' + table)
+                    if table=='relations' and not db.execute(
+                        'SELECT 1 FROM relation_sources WHERE job=? AND '+where+' AND shard=?',
+                        ('pytest',*row,path.name)).fetchone():
+                        raise ValueError('Raw evidence source missing')
 
 
 def _pack(merged, target, receipt):
@@ -92,7 +96,7 @@ def _pack(merged, target, receipt):
             db.execute('INSERT OR IGNORE INTO relation_strings(value) SELECT ' + col + ' FROM source.relations')
         db.execute('CREATE TABLE relation_keys(' + ','.join(
             col + ' INTEGER NOT NULL REFERENCES relation_strings(id)' for col in columns) +
-            ', PRIMARY KEY(job,nodeid,phase,api_id)) WITHOUT ROWID')
+            ', PRIMARY KEY(job,nodeid,phase,api_id,aliases,site)) WITHOUT ROWID')
         joins = ' '.join('JOIN relation_strings s' + str(i) + ' ON s' + str(i) + '.value=r.' + col
                          for i, col in enumerate(columns))
         db.execute('INSERT INTO relation_keys SELECT ' + ','.join('s' + str(i) + '.id' for i in range(6)) +

@@ -1,0 +1,105 @@
+{
+  "version": "0.1.8",
+  "date": "2026-10-27",
+  "platform": "Linux AArch64 / CPython 3.11 / Ascend NPU",
+  "regression": {
+    "total": 89,
+    "passed": 87,
+    "skipped": 2,
+    "failed": 0
+  },
+  "real_spin_tests": {
+    "returncode": 0,
+    "elapsed_seconds": 117.26114249229431
+  },
+  "legacy_comparison": {
+    "version": "0.1.7",
+    "merged_rows": 67,
+    "expected_verification_failure": true,
+    "error": "Raw/merged mismatch or conflicting shard rows: relations"
+  },
+  "retention": {
+    "compact": {
+      "database": "<validation-root>/spin-compact.sqlite",
+      "cleanup": "complete",
+      "checks": [
+        "raw_rows_match_merge",
+        "all_tables_bidirectional_except",
+        "foreign_key_check",
+        "integrity_check"
+      ],
+      "apis": 10362,
+      "tests": 2,
+      "relations": 79,
+      "phases": 6,
+      "gaps": 2,
+      "proves_zero_omissions": false
+    },
+    "append": {
+      "state": "captured",
+      "cleanup": "complete",
+      "relations": 79,
+      "tests_touched": 2,
+      "checks": [
+        "raw_mapping_and_owner_match",
+        "destination_mapping_and_phases_equal",
+        "prior_positive_subset",
+        "completed_instances_preserved",
+        "foreign_key_check",
+        "integrity_check"
+      ]
+    },
+    "normalized_observations": 69,
+    "evidence_sources": 97,
+    "schema": "api_test_relations_single_database/2",
+    "manual_seed_groups": [
+      [
+        "pytorch/test/spincli/test_spin.py::TestSpinCli::test_test_passes_the_exit_code_through",
+        "[\"python:torch.manual_seed\"]"
+      ],
+      [
+        "pytorch/test/spincli/test_spin.py::TestSpinCli::test_test_passes_the_exit_code_through",
+        "[\"python:torch.manual_seed\", \"python:torch.random.manual_seed\"]"
+      ],
+      [
+        "pytorch/test/spincli/test_spin.py::TestSpinCli::test_test_runs_pytest",
+        "[\"python:torch.manual_seed\"]"
+      ],
+      [
+        "pytorch/test/spincli/test_spin.py::TestSpinCli::test_test_runs_pytest",
+        "[\"python:torch.manual_seed\", \"python:torch.random.manual_seed\"]"
+      ]
+    ]
+  },
+  "installed_wheel_npu_dual_plugin": {
+    "returncode": 0,
+    "elapsed_seconds": 52.04650902748108,
+    "relation_rows": 73,
+    "sources": 73,
+    "relation_gaps": 0,
+    "raw_verification": "passed",
+    "replay_returncode": 0,
+    "callchain": {
+      "status": "captured",
+      "stage": "capture_only",
+      "mode": "full",
+      "gaps": [],
+      "native_storage": "paths",
+      "pytest_exit_code": 0,
+      "elapsed_seconds": 40.91377949999878,
+      "replay_performed": false,
+      "database_written": false,
+      "html_generated": false
+    }
+  },
+  "wheel": {
+    "file": "api_test_relations-0.1.8-py3-none-any.whl",
+    "sha256": "3d359fea4aaaad00260cd5fa59b6a0b2788d7f970da56aeb3c146de3030d5de1",
+    "source_and_install_files_verified": 23
+  },
+  "limitations": [
+    "Two existing real CUDA/torch tests remain opt-in and were skipped; actual NPU dual-plugin test was run.",
+    "Real spin capture retains two external non-Python process gaps; preservation verification is not a zero-omissions guarantee.",
+    "Full 66999-case whitelist has not completed."
+  ]
+}

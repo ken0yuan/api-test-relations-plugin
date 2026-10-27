@@ -14,6 +14,28 @@ from .retention import _idle, _inventory
 from .storage import connect, merge
 
 
+def upgrade_observation_schema(db):
+    """Transactional /1 -> /2 upgrade; caller owns the write transaction."""
+    schema=json.loads(db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()[0])
+    if schema=='api_test_relations_single_database/1':
+        db.execute('''CREATE TABLE observations_v2(
+            api_key INTEGER REFERENCES apis(id),test_key INTEGER REFERENCES tests(id),
+            phase_key INTEGER REFERENCES phases(id),alias_group_key INTEGER REFERENCES alias_groups(id),
+            PRIMARY KEY(api_key,test_key,phase_key,alias_group_key))''')
+        db.execute('INSERT INTO observations_v2 SELECT * FROM observations')
+        db.execute('DROP TABLE observations')
+        db.execute('ALTER TABLE observations_v2 RENAME TO observations')
+        db.execute("UPDATE metadata SET value=? WHERE key='schema'",(json.dumps('api_test_relations_single_database/2'),))
+    elif schema!='api_test_relations_single_database/2':
+        raise ValueError('Unsupported destination schema')
+    db.execute('''CREATE TABLE IF NOT EXISTS observation_evidence(
+        api_key INTEGER,test_key INTEGER,phase_key INTEGER,alias_group_key INTEGER,
+        site TEXT,source_capture TEXT,source_shard TEXT,
+        PRIMARY KEY(api_key,test_key,phase_key,alias_group_key,site,source_capture,source_shard),
+        FOREIGN KEY(api_key,test_key,phase_key,alias_group_key)
+            REFERENCES observations(api_key,test_key,phase_key,alias_group_key))''')
+
+
 def completed(db, module):
     return {r[0] for r in db.execute('''SELECT t.nodeid FROM tests t JOIN modules m ON m.id=t.module_id
         WHERE m.module=? AND t.capture_state='complete' ''', (module,))}
@@ -52,7 +74,6 @@ def verify_raw(db, source, retained):
                 if table not in tables or (table == 'phases' and child):
                     continue
                 columns = [r[1] for r in raw.execute('PRAGMA table_info(' + table + ')')]
-                if table == 'relations': columns = columns[:-1]  # first_site is not part of single_database/1
                 for row in raw.execute('SELECT ' + ','.join(columns) + ' FROM ' + table):
                     node = row[0]
                     if table in ('phases', 'relations') and node in retained:
@@ -67,10 +88,15 @@ def verify_raw(db, source, retained):
                     where = ' AND '.join(c + ' IS ?' for c in columns)
                     if not db.execute('SELECT 1 FROM ' + table + ' WHERE job=? AND ' + where, ('pytest', *row)).fetchone():
                         raise ValueError('Raw merge conflict: ' + table)
+                    if table=='relations' and not db.execute(
+                        'SELECT 1 FROM relation_sources WHERE job=? AND '+where+' AND shard=?',
+                        ('pytest',*row,file.name)).fetchone():
+                        raise ValueError('Raw evidence source missing')
 
 
 def import_merged(db, merged, module, attempt, version, receipt):
     """Caller holds BEGIN IMMEDIATE; failure rolls back the whole module."""
+    upgrade_observation_schema(db)
     module_id = db.execute('SELECT id FROM modules WHERE module=?', (module,)).fetchone()[0]
     module_file = db.execute('SELECT file FROM modules WHERE id=?', (module_id,)).fetchone()[0]
     retained = completed(db, module)
@@ -91,7 +117,8 @@ def import_merged(db, merged, module, attempt, version, receipt):
         # No silent loss of observations saved during earlier interrupted attempts.
         if not observations(db, ids[node]) <= fresh:
             raise ValueError('New attempt does not contain all prior interrupted observations: ' + node)
-        db.execute('DELETE FROM observations WHERE test_key=?', (ids[node],))
+        # Keep earlier positive evidence across interrupted attempts. The subset
+        # check above forbids shrinking it; new groups/sites are appended below.
         db.execute('DELETE FROM test_phases WHERE test_id=?', (ids[node],))
     for node, phase, state in phase_rows:
         db.execute('INSERT OR IGNORE INTO phases(name) VALUES (?)', (phase,))
@@ -102,7 +129,17 @@ def import_merged(db, merged, module, attempt, version, receipt):
         db.execute('INSERT OR IGNORE INTO alias_groups(api_ids_json) VALUES (?)', (aliases,))
         pid = db.execute('SELECT id FROM phases WHERE name=?', (phase,)).fetchone()[0]
         gid = db.execute('SELECT id FROM alias_groups WHERE api_ids_json=?', (aliases,)).fetchone()[0]
-        db.execute('INSERT INTO observations VALUES (?,?,?,?)', (api_ids[api], ids[node], pid, gid))
+        db.execute('INSERT OR IGNORE INTO observations VALUES (?,?,?,?)', (api_ids[api], ids[node], pid, gid))
+    evidence=[]
+    for node,phase,api,aliases,site,shard in merged.execute('SELECT nodeid,phase,api_id,aliases,site,shard FROM relation_sources'):
+        pid=db.execute('SELECT id FROM phases WHERE name=?',(phase,)).fetchone()[0]
+        gid=db.execute('SELECT id FROM alias_groups WHERE api_ids_json=?',(aliases,)).fetchone()[0]
+        evidence.append((api_ids[api],ids[node],pid,gid,site,receipt.get('source',attempt),shard))
+    db.executemany('INSERT OR IGNORE INTO observation_evidence VALUES (?,?,?,?,?,?,?)',evidence)
+    for row in evidence:
+        if not db.execute('SELECT 1 FROM observation_evidence WHERE '+ ' AND '.join(c+' IS ?' for c in
+            ('api_key','test_key','phase_key','alias_group_key','site','source_capture','source_shard')),row).fetchone():
+            raise ValueError('Destination evidence mismatch')
     for node in touched:
         stages = dict(merged.execute('SELECT phase,state FROM phases WHERE nodeid=?', (node,)))
         complete = stages.get('setup') == 'closed' and stages.get('teardown') == 'closed' and stages.get('call', 'closed') == 'closed'
@@ -149,7 +186,7 @@ def append_capture(source, database, module, *, interrupted=False, boundary_gaps
             try:
                 db.execute('PRAGMA foreign_keys=ON'); db.execute('PRAGMA synchronous=FULL')
                 schema = json.loads(db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()[0])
-                if schema != 'api_test_relations_single_database/1': raise ValueError('Unsupported destination schema')
+                if schema not in ('api_test_relations_single_database/1','api_test_relations_single_database/2'): raise ValueError('Unsupported destination schema')
                 catalog = [(a['api_id'],a['qualified_name'],a['language'],a['kind']) for a in read(source / 'api-catalog.json')['apis']]
                 if set(catalog) != set(db.execute('SELECT api_id,name,language,kind FROM apis')): raise ValueError('Frozen API catalog changed')
                 merged.executemany('INSERT INTO apis VALUES (?,?,?,?)', catalog)

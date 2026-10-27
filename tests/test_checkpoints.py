@@ -19,7 +19,7 @@ def bare_plugin(tmp_path):
     p.pid=os.getpid();p.repo=tmp_path;p.paths={};p.pending={};p.gaps=set();p.processes={}
     p.lock=threading.RLock();p.registry=SimpleNamespace(status={'a':'bound'});p._saved_registry=None
     p.db=sqlite3.connect(tmp_path/'raw.sqlite',check_same_thread=False)
-    p.db.executescript('''CREATE TABLE relations(nodeid,phase,api_id,aliases,site,PRIMARY KEY(nodeid,phase,api_id));
+    p.db.executescript('''CREATE TABLE relations(nodeid,phase,api_id,aliases,site,PRIMARY KEY(nodeid,phase,api_id,aliases));
 CREATE TABLE gaps(nodeid,phase,reason,PRIMARY KEY(nodeid,phase,reason));
 CREATE TABLE registry(api_id PRIMARY KEY,state);
 CREATE TABLE processes(token PRIMARY KEY,nodeid,phase,pid,state);''')

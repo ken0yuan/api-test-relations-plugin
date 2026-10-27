@@ -1,5 +1,7 @@
 # API ↔ Test Relations
 
+当前版本 **0.1.8** 修复父子进程对同一 API 观察到不同别名组时的证据覆盖：保留各组别名、首个调用位置和分片来源；重复合并幂等，压缩和增量入库保留相同证据。增量数据库 `/1` 在事务内升级为 `/2`。升级前保留原始分片，不对运行中的采集进程热替换代码。详见 [0.1.8 发布说明](docs/release-0.1.8.md) 与 [数据契约](docs/data-contract.md)。
+
 独立 pytest 插件：在已有测试执行期间记录 **台账 API ↔ 测试实例** 的关系。
 目标部署环境是 **ARM64 Linux + 昇腾 NPU**；采集核心与设备无关，x86 Linux 也可以使用。
 插件不设置 CUDA/NPU 设备、不启动后台调度、不安装或替换 PyTorch/torch_npu、不采集测试通过失败结果。
@@ -51,7 +53,7 @@ api-test-relations-plugin/
 在服务器**原有测试环境**中安装，以下安装不会依赖或替换 torch：
 
 ```bash
-python -m pip install ./api_test_relations-0.1.6-py3-none-any.whl
+python -m pip install ./api_test_relations-0.1.8-py3-none-any.whl
 api-test-relations doctor
 ```
 

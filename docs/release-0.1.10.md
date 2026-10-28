@@ -19,3 +19,9 @@
 仍限 CPython 3.11。独立观察通道不会让 Python 关系采集变成 C++ 调用栈采集，也不扩大 trace-api-chain 原本声明的线程/进程范围。
 
 Codex watermark: Assisted by OpenAI Codex.
+
+## 独立回归入口
+
+普通回归不要求安装 trace-api-chain。6 项需要两插件的测试标记为 `paired_plugins`，默认跳过；用户明确要求本轮不运行它们。真实 PyTorch/CUDA 的 3 项集成测试仍按已有设置默认跳过。独立回归预期为 102 通过、9 跳过。历史 108 通过含这 6 项联合验证，不作为普通独立回归的数量。
+
+test-api 的安装依赖仍只有 pytest，没有给它增加 trace-api-chain 依赖。服务器正式双插件采集任务的加载配置由任务本身决定，不受测试标记影响。

@@ -24,4 +24,4 @@ api_test_relations = ["catalogs/*.json", "runtime/*.c", "runtime/*.h"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: explicit opt-in real PyTorch/CUDA checks"]
+markers = ["integration: explicit opt-in real PyTorch/CUDA checks", "paired_plugins: optional callchain observer integration, disabled by default"]

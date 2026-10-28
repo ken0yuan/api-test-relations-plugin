@@ -18,7 +18,8 @@ sys.path[:0] = [str(_runtime), str(PACKAGE / 'runtime')]
 
 
 def pytest_collection_modifyitems(items):
-    if os.environ.get('API_RELATIONS_REAL_TORCH_TESTS') == '1': return
     for item in items:
-        if item.get_closest_marker('integration'):
+        if item.get_closest_marker('paired_plugins') and os.environ.get('API_RELATIONS_CALLCHAIN_TESTS')!='1':
+            item.add_marker(pytest.mark.skip(reason='Optional paired-plugin regressions are disabled by default'))
+        if item.get_closest_marker('integration') and os.environ.get('API_RELATIONS_REAL_TORCH_TESTS')!='1':
             item.add_marker(pytest.mark.skip(reason='Real torch/CUDA integration is explicit opt-in'))

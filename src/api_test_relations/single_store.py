@@ -1,4 +1,4 @@
-"""Append verified captures to single_database/1 without copying the baseline."""
+"""Append verified captures to the single database without copying the baseline."""
 import fcntl
 import json
 import os
@@ -56,6 +56,19 @@ def _is_module_collection_gap(node, phase, module_file):
         parts = value.parts[1:] if value.parts[:1] == ('pytorch',) else value.parts
         return PurePosixPath(*parts)
     return normalized(node) == normalized(module_file)
+
+
+def prepare_merge_indexes(merged):
+    """Index disposable merge rows by owner without changing evidence or SQL.
+
+    The existing primary keys start with job. Import checks also query by nodeid
+    alone; without these indexes each test scans the entire module repeatedly.
+    Do not use executescript here: the caller controls the transaction boundary.
+    """
+    indexes = ('merge_relations_by_nodeid', 'merge_phases_by_nodeid')
+    merged.execute('CREATE INDEX IF NOT EXISTS '+indexes[0]+' ON relations(nodeid)')
+    merged.execute('CREATE INDEX IF NOT EXISTS '+indexes[1]+' ON phases(nodeid)')
+    return indexes
 
 
 def verify_raw(db, source, retained):
@@ -192,6 +205,7 @@ def append_capture(source, database, module, *, interrupted=False, boundary_gaps
                 merged.executemany('INSERT INTO apis VALUES (?,?,?,?)', catalog)
                 merged.execute('INSERT INTO jobs VALUES (?,?,?,?)', ('pytest','pytorch/','settling',str(source)))
                 finished = merge(merged, 'pytest', source / 'shards', final=True)
+                merge_indexes = prepare_merge_indexes(merged)
                 verify_raw(merged, source, completed(db, module))
                 for reason in boundary_gaps:
                     merged.execute('INSERT OR IGNORE INTO gaps VALUES (?,?,?,?)', ('pytest','','session',reason))
@@ -204,6 +218,7 @@ def append_capture(source, database, module, *, interrupted=False, boundary_gaps
                 merged.commit()
                 receipt = {'source':str(source),'module':module,'source_hashes':before,'manifest':manifest,
                            'verified_at':time.time(),'cleanup':'pending','proves_zero_omissions':False,
+                           'merge_indexes':list(merge_indexes),
                            'selection':read(source/'resume-selection.json') if (source/'resume-selection.json').exists() else None,
                            'boundaries':list(merged.execute('SELECT nodeid,phase,reason FROM gaps'))}
                 receipt['process_evidence'] = {table:list(merged.execute('SELECT * FROM '+table))

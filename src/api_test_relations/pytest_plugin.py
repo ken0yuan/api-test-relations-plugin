@@ -35,8 +35,9 @@ def pytest_configure(config):
     root = Path(output).resolve()
     imports = config.getoption('--api-relations-import')
     manifest = initialize(root, Path(repo), Path(config.getoption('--api-relations-catalog')),
-                          config.getoption('--api-relations-exclude'), config.getoption('--api-relations-label'), imports)
-    runtime = root / 'runtime'
+                          config.getoption('--api-relations-exclude'), config.getoption('--api-relations-label'), imports,
+                          runtime=os.environ.get('TRACE_API_CHAIN_OBSERVER_RUNTIME'))
+    runtime = Path(manifest['runtime_directory'])
     sys.path.insert(0, str(runtime))
     updates = {'API_RELATION_REPO': manifest['repo'], 'API_RELATION_SHARDS': str(root / 'shards'),
                'API_RELATION_CATALOG': manifest['catalog'], 'API_RELATION_EXCLUDE': json.dumps(manifest['excluded_apis'])}

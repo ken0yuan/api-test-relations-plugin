@@ -71,12 +71,14 @@ static PyObject *frame_function(PyObject *self, PyObject *arg) {
     return Py_NewRef((PyObject *)frame->f_frame->f_func);
 }
 
+static PyMethodDef *boundary_original_definition(PyMethodDef *);
+
 /* Descriptor identity also survives storing a bound method before monkeypatching. */
 static PyObject *method_definition(PyObject *self, PyObject *arg) {
     if (PyCFunction_Check(arg))
-        return PyLong_FromVoidPtr(((PyCFunctionObject *)arg)->m_ml);
+        return PyLong_FromVoidPtr(boundary_original_definition(((PyCFunctionObject *)arg)->m_ml));
     if (Py_IS_TYPE(arg, &PyMethodDescr_Type) || Py_IS_TYPE(arg, &PyClassMethodDescr_Type))
-        return PyLong_FromVoidPtr(((PyMethodDescrObject *)arg)->d_method);
+        return PyLong_FromVoidPtr(boundary_original_definition(((PyMethodDescrObject *)arg)->d_method));
     Py_RETURN_NONE;
 }
 
@@ -203,7 +205,7 @@ static int filter_observation(PyObject *filter, PyFrameObject *frame, int event,
     if (!key) return -1;
     int found=PyDict_Contains(f->cfunc,key);Py_DECREF(key);
     if (found) return found;
-    key=PyLong_FromVoidPtr(((PyCFunctionObject *)arg)->m_ml);
+    key=PyLong_FromVoidPtr(boundary_original_definition(((PyCFunctionObject *)arg)->m_ml));
     if (!key) return -1;
     found=PyDict_Contains(f->descriptor,key);Py_DECREF(key);
     return found;
@@ -212,6 +214,9 @@ static int filter_observation(PyObject *filter, PyFrameObject *frame, int event,
 #include "relation_guard.h"
 
 static PyMethodDef methods[] = {
+    {"native_transition_active", native_transition_active, METH_NOARGS, "Whether a protected native callback transition is in progress."},
+    {"protect_native_boundary", protect_native_boundary, METH_O, "Preserve observers across an exact native profiler callable."},
+    {"original_native_function", original_native_function, METH_O, "Original native address before boundary protection."},
     {"make_filter", make_filter, METH_VARARGS, "Build immutable exact binding/version snapshot."},
     {"filter_dirty", filter_dirty, METH_O, "Check native binding snapshot without Python traversal."},
     {"set_profile", set_profile, METH_VARARGS, "Install compiler-isolated observer trampoline."},
@@ -222,6 +227,12 @@ static PyMethodDef methods[] = {
     {"trace_client", trace_client, METH_NOARGS, "Current tracing client."},
     {"guard_intact", guard_intact, METH_NOARGS, "Whether both guard channels remain installed."},
     {"guard_available", guard_available, METH_NOARGS, "Whether the opcode guard can repair profiler changes."},
+    {"protected_observer_available", protected_observer_available, METH_NOARGS, "Whether callback transitions are atomically multiplexed."},
+    {"protected_backend_available", protected_backend_available, METH_NOARGS, "Whether the native callback transition adapter is loaded."},
+    {"initialize_python_clients", initialize_python_clients, METH_VARARGS, "Save CPython's own Python callback trampolines."},
+    {"set_python_client", set_python_client, METH_VARARGS, "Change one Python profiling client without replacing observers."},
+    {"attach_callchain_observer", attach_callchain_observer, METH_VARARGS, "Attach independent callchain profile/trace observations."},
+    {"detach_callchain_observer", detach_callchain_observer, METH_O, "Detach a protected callchain subscription."},
     {"frame_function", frame_function, METH_O, "Return exact executing Python function."},
     {"method_definition", method_definition, METH_O, "Return process-local method definition identity."},
     {"namespace_version", namespace_version, METH_O, "Namespace mutation counter for incremental resolution."},

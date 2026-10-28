@@ -15,8 +15,10 @@ def repo_path(path,repo):
 
 
 class RelationPlugin:
-    def __init__(self,child_context=None):
-        import torch
+    def __init__(self,child_context=None,torch_root=None):
+        if torch_root is None:
+            import torch
+        else:torch=torch_root
         self.repo=Path(os.environ['API_RELATION_REPO']).resolve()
         self.pid=os.getpid();self.main_thread=threading.get_ident()
         folder=Path(os.environ['API_RELATION_SHARDS']);folder.mkdir(parents=True,exist_ok=True)

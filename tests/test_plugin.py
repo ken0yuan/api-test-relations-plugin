@@ -114,3 +114,42 @@ def test_no_device_policy_or_native_x86_assembly_in_runtime():
         assert 'CUDA_VISIBLE_DEVICES' not in code
         assert 'nvidia-smi' not in code
         assert '__asm__' not in code
+
+
+def test_fork_during_torch_import_observes_existing_bindings_and_finishes(tmp_path):
+    repo=tmp_path/'repo';(repo/'test').mkdir(parents=True);(repo/'torch').mkdir()
+    (repo/'torch/__init__.py').write_text('def beta():pass\n')
+    (repo/'sitecustomize.py').write_text('import sys\nfrom importlib.machinery import BuiltinImporter,FrozenImporter,PathFinder\nsys.meta_path[:]=[BuiltinImporter,FrozenImporter,PathFinder]\n')
+    (repo/'test/test_fork.py').write_text("""import torch,multiprocessing
+
+def child():torch.beta()
+def test_one():
+ torch.__spec__._initializing=True
+ try:
+  p=multiprocessing.get_context('fork').Process(target=child)
+  p.start();p.join(10)
+  assert not p.is_alive() and p.exitcode==0
+ finally:torch.__spec__._initializing=False
+""")
+    catalog=tmp_path/'catalog.json'
+    catalog.write_text(json.dumps({'apis':[{'api_id':'python:torch.beta','qualified_name':'torch.beta','language':'python','kind':'function'}]}))
+    out=tmp_path/'capture'
+    launch(repo,'--api-relations-repo',str(repo),'--api-relations-out',str(out),'--api-relations-catalog',str(catalog))
+    with sqlite3.connect(out/'relations.sqlite') as db:
+        assert db.execute('SELECT count(*) FROM relations WHERE api_id="python:torch.beta"').fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM gaps').fetchone()[0]==0
+        assert set(r[0] for r in db.execute('SELECT state FROM processes'))=={'acknowledged_complete'}
+
+
+def test_runtime_for_callchain_is_retained_outside_relationship_shards(tmp_path):
+    repo=tmp_path/'repo';repo.mkdir()
+    catalog=tmp_path/'catalog.json';catalog.write_text('{"apis":[]}')
+    root=tmp_path/'relations';runtime=tmp_path/'callchain'/'observer-runtime'
+    manifest=initialize(root,repo,catalog,[],'synthetic',[],runtime=runtime)
+    assert manifest['runtime_retained_for_callchain'] is True
+    assert Path(manifest['runtime_directory'])==runtime
+    assert list(runtime.glob('_relation_identity*.so'))
+    import shutil
+    shutil.rmtree(root)
+    assert (runtime/'relation_collector.py').exists()
+    assert list(runtime.glob('_relation_identity*.so'))

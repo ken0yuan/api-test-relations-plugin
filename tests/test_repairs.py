@@ -90,7 +90,12 @@ def test_trace_install_remove_during_capture_and_raw_bypass_is_visible():
     with collecting(SimpleNamespace(public=public),catalog(('public','function'))) as (c,hits,gaps):
         token=c.enter(('trace-changes','call'))
         sys.settrace(trace);public();sys.settrace(None);public()
-        raw_trace(None)  # Arbitrary native/raw loss of BOTH channels is a boundary.
+        raw_trace(None)  # Saved CPython setter has the same native protection.
+        assert not gaps
+        import ctypes
+        direct=ctypes.pythonapi.PyEval_SetTrace
+        direct.argtypes=[ctypes.c_void_p,ctypes.c_void_p];direct.restype=None
+        direct(None,None)  # Unknown native code bypassing exact callable boundaries is visible.
         c.leave(token)
     assert len(hits)==2
     assert events==['call','line','return']

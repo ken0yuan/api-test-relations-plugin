@@ -227,7 +227,7 @@ class ProcessBridge:
         self.close()
         if IMPORT_RESTORE:builtins.__import__,importlib.import_module=IMPORT_RESTORE
         ACTIVE=None;BOOT_PID=None;BOOT_CONTEXT=None;EARLY_BRIDGE=None;IMPORT_RESTORE=None;TASK_CONTEXT=None
-        if context:bootstrap(context)
+        if context:bootstrap({**context,'bootstrap_origin':'fork'})
         else:
             import multiprocessing.spawn as spawn
             spawn.prepare=self.prepare_child
@@ -245,7 +245,7 @@ def start_child(context):
         sys.path.insert(0,str(DIRECTORY))
         try:
             from relation_plugin import RelationPlugin
-            plugin=RelationPlugin(child_context=context)
+            plugin=RelationPlugin(child_context=context,torch_root=sys.modules.get('torch'))
         finally:sys.path.remove(str(DIRECTORY))
         ACTIVE=plugin
         if TASK_CONTEXT:
@@ -274,7 +274,11 @@ def bootstrap(context=None):
         nonlocal busy
         if busy or ACTIVE is not None or context.get('service'):return
         torch=sys.modules.get('torch')
-        if torch is None or getattr(getattr(torch,'__spec__',None),'_initializing',False):return
+        if torch is None:return
+        # A fork can inherit a module halfway through its parent's import. That
+        # import cannot finish in the child. Observe its existing exact bindings
+        # now; registry versions still detect any later additions or rebinding.
+        if getattr(getattr(torch,'__spec__',None),'_initializing',False) and context.get('bootstrap_origin')!='fork':return
         busy=True;builtins.__import__=original_import;importlib.import_module=original_module
         try:start_child(context)
         finally:busy=False

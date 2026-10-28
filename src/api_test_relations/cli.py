@@ -49,7 +49,7 @@ def build_identity(runtime):
     return target
 
 
-def initialize(root, repo, catalog, exclude, label, imports):
+def initialize(root, repo, catalog, exclude, label, imports, runtime=None):
     require_host()
     root, repo, catalog = root.resolve(), repo.resolve(), catalog.resolve()
     if root.exists() and any(root.iterdir()):
@@ -61,7 +61,7 @@ def initialize(root, repo, catalog, exclude, label, imports):
         for key in ('qualified_name', 'language', 'kind'): row[key]
     if len(ids) != len(set(ids)): raise ValueError('Duplicate api_id in catalog')
     root.mkdir(parents=True, exist_ok=True)
-    runtime = root / 'runtime'
+    runtime = Path(runtime).resolve() if runtime is not None else root / 'runtime'
     shutil.copytree(PACKAGE / 'runtime', runtime, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.so'))
     build_identity(runtime)
     shutil.copyfile(catalog, root / 'api-catalog.json')
@@ -76,6 +76,7 @@ def initialize(root, repo, catalog, exclude, label, imports):
                 'catalog_sha256': digest(root / 'api-catalog.json'), 'excluded_apis': sorted(set(exclude)),
                 'requested_imports': imports, 'test_outcomes_stored': False,
                 'package_files': {p.name: digest(p) for p in PACKAGE.glob('*.py')},
+                'runtime_directory': str(runtime), 'runtime_retained_for_callchain': runtime != root / 'runtime',
                 'collector_files': {str(p): digest(p) for p in runtime.rglob('*') if p.is_file()},
                 'mapping_semantics': 'Observed callable identities in setup/call/teardown; includes transitive calls and aliases. Not assertion or native-kernel coverage.'}
     save(root / 'manifest.json', manifest)

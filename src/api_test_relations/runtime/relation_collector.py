@@ -1,6 +1,7 @@
 """Exact callable identity, independent profiling clients, causal thread ownership.
 
-No PyTorch names, source offsets or test-specific exceptions are hard-coded.
+API identity uses no source offsets or test-specific exceptions. Known native
+profiler controls are protected separately, preserving their callable identities.
 """
 import _thread
 import concurrent.futures
@@ -14,6 +15,7 @@ from _relation_identity import frame_function, method_definition, namespace_vers
 
 from relation_context import OWNER
 from _relation_identity import make_filter, filter_dirty
+from _relation_identity import protected_observer_available, protected_backend_available, initialize_python_clients, set_python_client, protect_native_boundary, native_transition_active
 
 _MISSING = object()
 
@@ -179,11 +181,14 @@ class Collector:
         if owner is not None and os.getpid()==self.pid:self.on_gap(owner,reason)
 
     def _audit(self,event,args):
+        # Most events are ordinary attribute reads performed by either workload
+        # or observer. Only these lifecycle events affect capture validity.
+        if event not in ('sys.setprofile','sys.settrace','subprocess.Popen','os.fork','os.posix_spawn','os.exec','os.system'):return
         if not self.enabled or os.getpid()!=self.pid:return
         if event=='sys.setprofile' and not getattr(self.local,'internal',False):
-            if not guard_available():self.gap('profile_bypassed_multiplexer')
+            if not native_transition_active():self.gap('profile_bypassed_multiplexer')
         elif event=='sys.settrace' and not getattr(self.local,'internal',False):
-            self.gap('trace_guard_bypassed')
+            if not native_transition_active():self.gap('trace_guard_bypassed')
         elif event in ('subprocess.Popen','os.fork','os.posix_spawn','os.exec','os.system'):
             self.gap('child_process_not_instrumented:'+event)
 
@@ -226,6 +231,9 @@ class Collector:
     def _change_client(self,setter,callback):
         previous=getattr(self.local,'internal',False);self.local.internal=True
         try:
+            if protected_observer_available():
+                set_python_client(0 if setter==self.raw_set else 1,callback)
+                return
             remove_guard()
             try:setter(callback)
             finally:install_guard(self.dispatch,self.evaluation_guard,self.registry.fast_state)
@@ -244,6 +252,17 @@ class Collector:
 
     def install(self):
         if self.enabled:return
+        if protected_backend_available():
+            initialize_python_clients(self.raw_set,self.raw_trace,self.dispatch)
+            protect_native_boundary(self.raw_set);protect_native_boundary(self.raw_trace)
+            import _lsprof
+            for name in ('enable','disable'):
+                protect_native_boundary(vars(_lsprof.Profiler)[name])
+            torch=sys.modules.get('torch')
+            profiler=getattr(getattr(torch,'autograd',None),'profiler',None)
+            for name in ('_enable_profiler','_disable_profiler','_enable_profiler_legacy','_disable_profiler_legacy'):
+                boundary=getattr(profiler,name,None)
+                if type(boundary) is types.BuiltinFunctionType:protect_native_boundary(boundary)
         self.enabled=True
         sys.addaudithook(self._audit)
         sys.setprofile=self.setprofile;sys.getprofile=self.getprofile

@@ -148,6 +148,9 @@ def launch_spec(manifest, root, row, attempt):
             cmd += ['--ignore', str(repo/'torch/onnx')]; env.pop('TORCH_DOCTEST_ONNX', None)
     if row['module'] in manifest.get('cuda_ipc_vmm_modules', []):
         cmd += ['--api-relations-cuda-ipc-vmm']
+    if row['module'] in manifest.get('aot_const_format_modules', []):
+        cmd += ['-p', 'aot_const_format_compat']
+        env['RELATION_AOT_CONST_FORMAT'] = '1'
     return cmd, env, output
 
 

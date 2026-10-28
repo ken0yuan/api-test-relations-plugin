@@ -3,6 +3,7 @@ import atexit,builtins,importlib,inspect,json,os,subprocess,sys,threading,uuid
 from pathlib import Path
 from relation_context import OWNER
 from relation_launch import prepare
+from relation_cuda_ipc import configure as configure_cuda_ipc
 DIRECTORY=Path(__file__).resolve().parent
 ACTIVE=None
 BOOT_PID=None
@@ -29,10 +30,13 @@ def current_owner():
 def context_for(owner,transport):
     frame=inspect.currentframe().f_back
     while frame and (Path(frame.f_code.co_filename).parent==DIRECTORY or frame.f_code.co_filename.endswith('/subprocess.py')):frame=frame.f_back
+    settings={key:os.environ[key] for key in SETTINGS if key in os.environ}
+    if os.environ.get('API_RELATION_CUDA_IPC_VMM')=='1':
+        settings.update({key:os.environ[key] for key in ('API_RELATION_CUDA_IPC_VMM','PYTORCH_ALLOC_CONF') if key in os.environ})
     return {'token':uuid.uuid4().hex,'nodeid':owner[0],'phase':owner[1],'parent_pid':os.getpid(),
             'parent_token':BOOT_CONTEXT['token'] if BOOT_PID==os.getpid() and BOOT_CONTEXT else None,
             'transport':transport,'site':[frame.f_code.co_filename,frame.f_lineno] if frame else None,
-            'settings':{key:os.environ[key] for key in SETTINGS if key in os.environ}}
+            'settings':settings}
 
 def launch(context,pid,detail):
     try:start_ticks=Path('/proc',str(pid),'stat').read_text().rpartition(')')[2].split()[19]
@@ -260,6 +264,8 @@ def bootstrap(context=None):
     BOOT_PID=os.getpid();BOOT_CONTEXT=context
     for key,value in context.get('settings',{}).items():os.environ[key]=value
     os.environ['API_RELATION_PARENT']=json.dumps(context)
+    if os.environ.get('API_RELATION_CUDA_IPC_VMM')=='1' and not context.get('service'):
+        document('cuda-ipc-compat',str(os.getpid()),configure_cuda_ipc())
     receipt(context,'service_started' if context.get('service') else 'python_started')
     EARLY_BRIDGE=ProcessBridge()
     original_import=builtins.__import__;original_module=importlib.import_module

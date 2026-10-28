@@ -146,6 +146,8 @@ def launch_spec(manifest, root, row, attempt):
         if manifest.get('doctest_onnx'): env['TORCH_DOCTEST_ONNX'] = '1'
         else:
             cmd += ['--ignore', str(repo/'torch/onnx')]; env.pop('TORCH_DOCTEST_ONNX', None)
+    if row['module'] in manifest.get('cuda_ipc_vmm_modules', []):
+        cmd += ['--api-relations-cuda-ipc-vmm']
     return cmd, env, output
 
 

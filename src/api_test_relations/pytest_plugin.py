@@ -1,4 +1,4 @@
-"""Opt-in pytest adapter. No device flags or execution policy are changed."""
+"""Opt-in pytest adapter; CUDA IPC execution compatibility requires a separate flag."""
 import importlib
 import json
 import os
@@ -17,6 +17,8 @@ def pytest_addoption(parser):
     group.addoption('--api-relations-exclude', action='append', default=['torch.compile'])
     group.addoption('--api-relations-label', default='unspecified', help='Metadata only, e.g. ascend-npu; does not set a device')
     group.addoption('--api-relations-child-wait', type=int, default=120)
+    group.addoption('--api-relations-cuda-ipc-vmm', action='store_true',
+                    help='Explicit Linux CUDA IPC compatibility: VMM allocator and per-process parent-family descriptor permission')
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -39,9 +41,16 @@ def pytest_configure(config):
     updates = {'API_RELATION_REPO': manifest['repo'], 'API_RELATION_SHARDS': str(root / 'shards'),
                'API_RELATION_CATALOG': manifest['catalog'], 'API_RELATION_EXCLUDE': json.dumps(manifest['excluded_apis'])}
     previous = {key: os.environ.get(key) for key in updates}
+    if config.getoption('--api-relations-cuda-ipc-vmm'):
+        previous.update({key: os.environ.get(key) for key in ('API_RELATION_CUDA_IPC_VMM', 'PYTORCH_ALLOC_CONF')})
+        updates['API_RELATION_CUDA_IPC_VMM'] = '1'
     os.environ.update(updates)
     config._relation_state = {'root': root, 'previous': previous, 'runtime': str(runtime), 'observer': None}
     try:
+        compatibility = None
+        if config.getoption('--api-relations-cuda-ipc-vmm'):
+            from relation_cuda_ipc import configure
+            compatibility = configure()
         for name in imports: importlib.import_module(name)
         from relation_plugin import RelationPlugin
         observer = RelationPlugin()
@@ -50,7 +59,10 @@ def pytest_configure(config):
         versions = {name: {'version': str(getattr(sys.modules.get(name), '__version__', 'unknown')),
                            'file': str(getattr(sys.modules.get(name), '__file__', 'unknown'))}
                     for name in ['torch', *imports]}
-        save(root / 'environment.json', {'modules': versions, 'backend_label_is_metadata_only': True})
+        environment = {'modules': versions, 'backend_label_is_metadata_only': True}
+        if compatibility is not None:
+            environment['runtime_compatibility'] = compatibility
+        save(root / 'environment.json', environment)
     except BaseException as exc:
         save(root / 'capture-error.json', {'stage': 'configure', 'reason': repr(exc)})
         raise

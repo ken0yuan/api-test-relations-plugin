@@ -1,0 +1,11 @@
+{
+  "environment": "fresh CPython 3.11 venv; no trace_api_chain; no torch",
+  "passed": 102,
+  "skipped": 9,
+  "skips": {
+    "paired_plugins_disabled_per_user": 6,
+    "explicit_real_torch_cuda": 3
+  },
+  "server_evidence": "/home/workspace-ycy/compile-performance/capture-repair-2026-10-28/test-api-without-callchain",
+  "runtime_dependency_added": false
+}

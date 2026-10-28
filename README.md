@@ -134,3 +134,5 @@ python scripts/check_smoke_relations.py --out /data/api-relations/npu-smoke-001
 本次在隔离的 x86 Linux / CPython 3.11 环境验证采集逻辑，真实 ARM/NPU 验收尚未执行。NPU 专属扩展、替换后的绑定和目标测试的采集缺口，需要以上实机检查确认。
 
 0.1.1 修复注册表并发刷新、cProfile 抢占、SQLite 热日志合并三类问题；0.1.2 增加进程退出后的证据重汇总。39 项隔离回归及另外 2 项真实 PyTorch/CUDA 集成检查通过；还进行了真实上游测试对照。修复范围与剩余边界见 `RELEASE_NOTES.md` 和 `docs/limitations.md`。已有基线不会自动恢复或重采。
+
+普通回归无需安装 trace-api-chain。6 项 `paired_plugins` 联合回归默认跳过，本轮按用户要求不运行。独立环境验证（未安装 PyTorch、trace-api-chain）：102 项通过、9 项跳过，其中 6 项为上述联合回归、3 项为原有真实 PyTorch/CUDA 集成测试。

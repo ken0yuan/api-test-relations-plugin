@@ -9,7 +9,7 @@ import pytest
 from _relation_identity import protected_backend_available
 from relation_collector import Collector,Registry
 
-pytestmark=pytest.mark.skipif(not protected_backend_available(),reason='requires CPython callback boundary protection')
+pytestmark=[pytest.mark.paired_plugins,pytest.mark.skipif(not protected_backend_available(),reason='requires CPython callback boundary protection')]
 
 
 def observed(tmp_path,source,invoke):

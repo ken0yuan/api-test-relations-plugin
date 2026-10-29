@@ -2,6 +2,7 @@
 #include <Python.h>
 #include <internal/pycore_frame.h>
 #include <descrobject.h>
+#include <string.h>
 
 #if PY_MAJOR_VERSION != 3 || PY_MINOR_VERSION != 11
 #error "This identity adapter is for CPython 3.11; add a version adapter before using another interpreter."
@@ -213,7 +214,27 @@ static int filter_observation(PyObject *filter, PyFrameObject *frame, int event,
 
 #include "relation_guard.h"
 
+static PyObject *filtered_lifecycle_audit(PyObject *callback,PyObject *args) {
+    PyObject *event,*payload;
+    if (!PyArg_ParseTuple(args,"UO",&event,&payload)) return NULL;
+    static const char *events[]={"sys.setprofile","sys.settrace","subprocess.Popen",
+        "os.fork","os.posix_spawn","os.exec","os.system",NULL};
+    for (int i=0;events[i];i++) {
+        int comparison=PyUnicode_CompareWithASCIIString(event,events[i]);
+        if (comparison==-1 && PyErr_Occurred()) return NULL;
+        if (!comparison) return PyObject_CallObject(callback,args);
+    }
+    Py_RETURN_NONE;
+}
+static PyMethodDef lifecycle_audit_method={"_filtered_lifecycle_audit",filtered_lifecycle_audit,METH_VARARGS,
+    "Forward every observer-lifecycle audit event, without Python calls for unrelated events."};
+static PyObject *lifecycle_audit_filter(PyObject *self,PyObject *callback) {
+    if (!PyCallable_Check(callback)) {PyErr_SetString(PyExc_TypeError,"audit callback must be callable");return NULL;}
+    return PyCFunction_NewEx(&lifecycle_audit_method,callback,NULL);
+}
+
 static PyMethodDef methods[] = {
+    {"lifecycle_audit_filter", lifecycle_audit_filter, METH_O, "Build a native filter for exactly the collector's lifecycle audit events."},
     {"native_transition_active", native_transition_active, METH_NOARGS, "Whether a protected native callback transition is in progress."},
     {"protect_native_boundary", protect_native_boundary, METH_O, "Preserve observers across an exact native profiler callable."},
     {"original_native_function", original_native_function, METH_O, "Original native address before boundary protection."},

@@ -16,6 +16,7 @@ from _relation_identity import frame_function, method_definition, namespace_vers
 from relation_context import OWNER
 from _relation_identity import make_filter, filter_dirty
 from _relation_identity import protected_observer_available, protected_backend_available, initialize_python_clients, set_python_client, protect_native_boundary, native_transition_active
+from _relation_identity import lifecycle_audit_filter
 
 _MISSING = object()
 
@@ -264,7 +265,10 @@ class Collector:
                 boundary=getattr(profiler,name,None)
                 if type(boundary) is types.BuiltinFunctionType:protect_native_boundary(boundary)
         self.enabled=True
-        sys.addaudithook(self._audit)
+        # Attribute/code introspection audits do not change lifecycle validity.
+        # Reject only those irrelevant audit notifications in C; every lifecycle
+        # event still reaches the exact same Python guard and failure checks.
+        sys.addaudithook(lifecycle_audit_filter(self._audit))
         sys.setprofile=self.setprofile;sys.getprofile=self.getprofile
         sys.settrace=self.settrace;sys.gettrace=self.gettrace
         _thread.start_new_thread=self.start_thread;threading._start_new_thread=self.start_thread

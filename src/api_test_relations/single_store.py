@@ -107,7 +107,7 @@ def verify_raw(db, source, retained):
                         raise ValueError('Raw evidence source missing')
 
 
-def import_merged(db, merged, module, attempt, version, receipt):
+def import_merged(db, merged, module, attempt, version, receipt, *, allow_reexecution_of=()):
     """Caller holds BEGIN IMMEDIATE; failure rolls back the whole module."""
     upgrade_observation_schema(db)
     module_id = db.execute('SELECT id FROM modules WHERE module=?', (module,)).fetchone()[0]
@@ -116,7 +116,16 @@ def import_merged(db, merged, module, attempt, version, receipt):
     raw_tests = dict(merged.execute('SELECT nodeid,file FROM tests'))
     phase_rows = list(merged.execute('SELECT nodeid,phase,state FROM phases'))
     touched = {r[0] for r in phase_rows} | {r[0] for r in merged.execute('SELECT DISTINCT nodeid FROM relations')}
-    if touched & retained: raise ValueError('Completed instance cannot be replaced')
+    allowed=set(allow_reexecution_of)
+    if not allowed<=touched:raise ValueError('Authorized reexecution is not present in this capture')
+    if (touched & retained)-allowed: raise ValueError('Completed instance cannot be replaced')
+    prior_positive={};history={}
+    for node in allowed:
+        row=db.execute('SELECT * FROM tests WHERE module_id=? AND nodeid=?',(module_id,node)).fetchone()
+        if row:
+            prior_positive[node]=observations(db,row[0])
+            history[node]={'test_record':list(row),'observations':[list(r) for r in sorted(prior_positive[node])],
+                           'phases':[list(r) for r in db.execute('SELECT p.name,tp.state FROM test_phases tp JOIN phases p ON p.id=tp.phase_id WHERE tp.test_id=? ORDER BY p.name',(row[0],))]}
     api_ids = dict(db.execute('SELECT api_id,id FROM apis'))
     for node, file in raw_tests.items():
         prior = db.execute('SELECT id,file,capture_state FROM tests WHERE module_id=? AND nodeid=?', (module_id, node)).fetchone()
@@ -128,7 +137,7 @@ def import_merged(db, merged, module, attempt, version, receipt):
     for node in touched:
         fresh = set(merged.execute('SELECT api_id,phase,aliases FROM relations WHERE nodeid=?', (node,)))
         # No silent loss of observations saved during earlier interrupted attempts.
-        if not observations(db, ids[node]) <= fresh:
+        if node not in allowed and not observations(db, ids[node]) <= fresh:
             raise ValueError('New attempt does not contain all prior interrupted observations: ' + node)
         # Keep earlier positive evidence across interrupted attempts. The subset
         # check above forbids shrinking it; new groups/sites are appended below.
@@ -156,9 +165,11 @@ def import_merged(db, merged, module, attempt, version, receipt):
     for node in touched:
         stages = dict(merged.execute('SELECT phase,state FROM phases WHERE nodeid=?', (node,)))
         complete = stages.get('setup') == 'closed' and stages.get('teardown') == 'closed' and stages.get('call', 'closed') == 'closed'
+        if node in retained and not complete:raise ValueError('Incomplete reexecution cannot replace completed instance')
         db.execute('UPDATE tests SET capture_state=?,source_version=?,source_attempt=? WHERE id=?',
                    ('complete' if complete else 'incomplete', version, attempt, ids[node]))
         expected = set(merged.execute('SELECT api_id,phase,aliases FROM relations WHERE nodeid=?', (node,)))
+        if node in allowed:expected|=prior_positive.get(node,set())
         if observations(db, ids[node]) != expected: raise ValueError('Destination observation mismatch')
         actual_phases = set(db.execute('SELECT p.name,tp.state FROM test_phases tp JOIN phases p ON p.id=tp.phase_id WHERE tp.test_id=?', (ids[node],)))
         if actual_phases != set(stages.items()): raise ValueError('Destination phase mismatch')
@@ -172,9 +183,14 @@ def import_merged(db, merged, module, attempt, version, receipt):
     if not retained <= completed(db, module): raise ValueError('Completed source set changed')
     receipt.update(tests_touched=len(touched), retained_unchanged=len(retained),
                    relations=merged.execute('SELECT count(*) FROM relations').fetchone()[0])
+    if allowed:receipt.update(authorized_reexecutions=sorted(allowed),reexecution_prior=history,
+                             reexecution_semantics='union of prior and current positive evidence; source_capture attribution retained')
 
 
-def append_capture(source, database, module, *, interrupted=False, boundary_gaps=(), interrupted_nodes=()):
+def append_capture(source, database, module, *, interrupted=False, boundary_gaps=(), interrupted_nodes=(), allow_reexecution_of=()):
+    reexecution_nodes=set(allow_reexecution_of)
+    if any(type(node) is not str or not node.startswith('pytorch/') or '::' not in node for node in reexecution_nodes):
+        raise ValueError('Reexecution requires exact pytorch-prefixed test identities')
     source, database = Path(source).absolute(), Path(database).resolve()
     if source.is_symlink(): raise ValueError('Symlink capture directory')
     source = source.resolve()
@@ -206,10 +222,12 @@ def append_capture(source, database, module, *, interrupted=False, boundary_gaps
                 merged.execute('INSERT INTO jobs VALUES (?,?,?,?)', ('pytest','pytorch/','settling',str(source)))
                 finished = merge(merged, 'pytest', source / 'shards', final=True)
                 merge_indexes = prepare_merge_indexes(merged)
-                verify_raw(merged, source, completed(db, module))
+                verify_raw(merged, source, completed(db, module)-reexecution_nodes)
                 for reason in boundary_gaps:
                     merged.execute('INSERT OR IGNORE INTO gaps VALUES (?,?,?,?)', ('pytest','','session',reason))
                 if interrupted:
+                    if reexecution_nodes & completed(db,module):
+                        raise ValueError('Incomplete reexecution cannot replace completed instance')
                     # Closing finally blocks must not turn interrupted work into completion.
                     merged.execute("UPDATE phases SET state='interrupted' WHERE state!='closed'")
                     for node in interrupted_nodes:
@@ -229,7 +247,8 @@ def append_capture(source, database, module, *, interrupted=False, boundary_gaps
                 db.commit(); db.execute('BEGIN IMMEDIATE')
                 prior = db.execute('SELECT detail FROM capture_runs WHERE attempt=?', (str(source),)).fetchone()
                 if prior: raise ValueError('Attempt already committed; inspect receipt before cleanup retry')
-                import_merged(db, merged, module, source.name, manifest.get('package_version'), receipt)
+                if reexecution_nodes:import_merged(db, merged, module, source.name, manifest.get('package_version'), receipt,allow_reexecution_of=reexecution_nodes)
+                else:import_merged(db, merged, module, source.name, manifest.get('package_version'), receipt)
                 collection_gap = merged.execute("SELECT 1 FROM gaps WHERE phase='collection' OR reason LIKE 'collection_unavailable:%' LIMIT 1").fetchone()
                 state = 'interrupted' if interrupted else ('captured' if finished and not collection_gap else 'capture_incomplete')
                 db.execute('UPDATE modules SET capture_state=? WHERE module=?', (state,module))

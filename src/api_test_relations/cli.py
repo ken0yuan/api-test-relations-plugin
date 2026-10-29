@@ -141,6 +141,7 @@ def main(argv=None):
     a = commands.add_parser('append', help='Verify and append a stopped run to an existing single_database/1 database, then clean raw output')
     a.add_argument('--database', type=Path, required=True)
     a.add_argument('--module', required=True)
+    a.add_argument('--allow-reexecution-of',action='append',default=[],help='Explicit exact pytorch/ nodeid allowed to run again; retain the union of positive evidence and old source attribution')
     for name, command in commands.choices.items():
         if name != 'doctor': command.add_argument('--out', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -150,7 +151,7 @@ def main(argv=None):
         result = compact(args.out, args.database)
     elif args.action == 'append':
         from .single_store import append_capture
-        result = append_capture(args.out, args.database, args.module)
+        result = append_capture(args.out, args.database, args.module,allow_reexecution_of=args.allow_reexecution_of)
     elif args.action == 'settle':
         from .settle import settle
         result = settle(args.out, args.destination)

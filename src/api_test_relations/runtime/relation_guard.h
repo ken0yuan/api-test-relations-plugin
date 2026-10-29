@@ -105,7 +105,41 @@ static PyObject *find_guard(void) {
     return NULL;
 }
 
+/* CPython 3.11 call_trace builds a line cache BEFORE invoking our callback.
+ * A synthetic traceback can copy a longer code object's co_linetable onto a
+ * short eval code object. Stock _PyCode_CreateLineArray then writes beyond its
+ * Py_SIZE(code)-entry allocation. Prepare only this overlong case at the exact
+ * code.replace return boundary, before the new object can execute.
+ * Keep the code object, bytecode, original position table and in-range mapping.
+ * The interpreter owns/frees this ordinary PyMem cache exactly as before. */
+static int prepare_code_line_cache(PyCodeObject *code) {
+    if (code->_co_linearray) return 0;
+    PyObject *ranges=PyObject_CallMethod((PyObject *)code,"co_lines",NULL);
+    if (!ranges) return -1;
+    PyObject *range;int overrun=0;
+    Py_ssize_t units=Py_SIZE(code);
+    while ((range=PyIter_Next(ranges))) {
+        Py_ssize_t end=PyLong_AsSsize_t(PyTuple_GET_ITEM(range,1));
+        Py_DECREF(range);
+        if (end<0 && PyErr_Occurred()) {Py_DECREF(ranges);return -1;}
+        if (end/2>units) {overrun=1;break;}
+    }
+    Py_DECREF(ranges);
+    if (PyErr_Occurred()) return -1;
+    if (!overrun) return 0;
+    if (units<=0 || units>INT_MAX/2 || units>PY_SSIZE_T_MAX/(Py_ssize_t)sizeof(int32_t)) {
+        PyErr_SetString(PyExc_ValueError,"invalid code size for tracing line cache");return -1;
+    }
+    int32_t *lines=PyMem_Malloc(units*sizeof(int32_t));
+    if (!lines) {PyErr_NoMemory();return -1;}
+    for (Py_ssize_t i=0;i<units;i++) lines[i]=PyCode_Addr2Line(code,(int)(i*2));
+    code->_co_linearray_entry_size=4;
+    code->_co_linearray=(char *)lines;
+    return 0;
+}
+
 static int guard_frame(RelationGuard *g, PyFrameObject *frame) {
+    if (prepare_code_line_cache(frame->f_frame->f_code)<0) return -1;
     if (!PyDict_GetItem(g->frames,(PyObject *)frame)) {
         if (PyDict_SetItem(g->frames,(PyObject *)frame,
                           frame->f_trace_opcodes ? Py_True : Py_False)<0) return -1;
@@ -167,6 +201,9 @@ static PyObject *native_transition_active(PyObject *self,PyObject *unused) {
     return PyBool_FromLong(PyThread_tss_is_created(&native_transition_key) && PyThread_tss_get(&native_transition_key)!=NULL);
 }
 static PyObject *boundary_finish(PyObject *held,PyObject *result) {
+    if (result && PyCode_Check(result) && PyList_GET_SIZE(held)>0 && prepare_code_line_cache((PyCodeObject *)result)<0) {
+        Py_DECREF(result);result=NULL;
+    }
     PyObject *type=NULL,*value=NULL,*tb=NULL;
     if (!result) PyErr_Fetch(&type,&value,&tb);
     for (Py_ssize_t i=0;i<PyList_GET_SIZE(held);i++) {
@@ -299,6 +336,7 @@ static int guarded_trace(PyObject *capsule, PyFrameObject *frame, int event, PyO
         if (g->trace) result=g->trace(g->trace_obj,frame,event,arg);
         goto done;
     }
+    if (prepare_code_line_cache(frame->f_frame->f_code)<0) {result=-1;goto done;}
     if (protected_trace(g,frame,event,arg)<0) {result=-1;goto done;}
     if (event==PyTrace_OPCODE && !g->trace) {
         /* Keep every-opcode rearming; no client needs frame/flag lookups here. */

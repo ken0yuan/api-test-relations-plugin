@@ -2,6 +2,7 @@
 #include <Python.h>
 #include <internal/pycore_frame.h>
 #include <descrobject.h>
+#include <stdint.h>
 #include <string.h>
 
 #if PY_MAJOR_VERSION != 3 || PY_MINOR_VERSION != 11
@@ -124,9 +125,24 @@ typedef struct {
     int kind;
 } BindingVersion;
 typedef struct {
+    const void *address;
+    uintptr_t expected;
+} BindingStructure;
+typedef struct {
+    const uint64_t *address;
+    uint64_t expected;
+} BindingDictionary;
+typedef struct {
     PyObject *python,*cfunc,*descriptor;
     Py_ssize_t count;
     BindingVersion *items;
+    BindingStructure *structures;
+    BindingDictionary *dictionaries;
+    BindingVersion **instances;
+    Py_ssize_t dictionary_count,instance_count;
+    PyObject *clock,*clock_key;
+    uint64_t clock_version,scans,epoch_hits;
+    int clock_flip,clock_pending,dirty;
 } BindingFilter;
 
 static void destroy_filter(PyObject *capsule) {
@@ -136,6 +152,8 @@ static void destroy_filter(PyObject *capsule) {
     for (Py_ssize_t i=0;i<f->count;i++) {
         Py_XDECREF(f->items[i].object);Py_XDECREF(f->items[i].dict);Py_XDECREF(f->items[i].mro);
     }
+    Py_XDECREF(f->clock);Py_XDECREF(f->clock_key);
+    PyMem_Free(f->structures);PyMem_Free(f->dictionaries);PyMem_Free(f->instances);
     PyMem_Free(f->items);PyMem_Free(f);
 }
 
@@ -153,6 +171,14 @@ static PyObject *make_filter(PyObject *self, PyObject *args) {
     if (!f->items) {PyMem_Free(f);return PyErr_NoMemory();}
     PyObject *capsule=PyCapsule_New(f,"relation_binding_filter",destroy_filter);
     if (!capsule) {PyMem_Free(f->items);PyMem_Free(f);return NULL;}
+    f->structures=PyMem_Calloc(f->count+1,sizeof(BindingStructure));
+    f->dictionaries=PyMem_Calloc(f->count+1,sizeof(BindingDictionary));
+    f->instances=PyMem_Calloc(f->count+1,sizeof(BindingVersion *));
+    f->clock=PyDict_New();f->clock_key=PyUnicode_FromString("binding_epoch");
+    if (!f->structures || !f->dictionaries || !f->instances || !f->clock || !f->clock_key) {
+        Py_DECREF(capsule);return PyErr_NoMemory();
+    }
+    if (PyDict_SetItem(f->clock,f->clock_key,Py_False)<0) {Py_DECREF(capsule);return NULL;}
     f->python=Py_NewRef(python);f->cfunc=Py_NewRef(cfunc);f->descriptor=Py_NewRef(descriptor);
     for (Py_ssize_t i=0;i<f->count;i++) {
         BindingVersion *v=&f->items[i];PyObject *version=PyTuple_GET_ITEM(versions,i);
@@ -162,6 +188,19 @@ static PyObject *make_filter(PyObject *self, PyObject *args) {
         v->mro=Py_NewRef(PyTuple_GET_ITEM(version,1));version=PyTuple_GET_ITEM(version,0);
         v->version=PyLong_AsUnsignedLongLong(version);
         if (PyErr_Occurred()) {Py_DECREF(capsule);return NULL;}
+        /* Keep the original strong references, but scan compact homogeneous
+         * arrays. Structure changes are checked even without any dict write. */
+        f->structures[i].address=v->kind==1 ?
+            (const void *)&((PyTypeObject *)v->object)->tp_mro :
+            (const void *)&v->object->ob_type;
+        f->structures[i].expected=(uintptr_t)v->mro;
+        if (v->dict) {
+            BindingDictionary *d=&f->dictionaries[f->dictionary_count++];
+            d->address=&((PyDictObject *)v->dict)->ma_version_tag;d->expected=v->version;
+        }
+        /* Recompute instance dict slots with CPython's original accessor. This
+         * also covers replacement dicts and variable/native object layouts. */
+        if (v->kind==2) f->instances[f->instance_count++]=v;
     }
     return capsule;
 }
@@ -175,18 +214,70 @@ static BindingFilter *get_filter(PyObject *state) {
 
 static int binding_filter_dirty(BindingFilter *f) {
     if (!f) return 1;
+    /* A discovered change remains dirty until a NEW snapshot is published.
+     * Native rejection, Python dispatch, and refresh can consult this object
+     * repeatedly before publication; an epoch hit must never hide that change. */
+    if (f->dirty) return 1;
     for (Py_ssize_t i=0;i<f->count;i++) {
-        BindingVersion *v=&f->items[i];
-        if (v->kind==2 && namespace_dict(v->object)!=v->dict) return 1;
-        if (v->dict && ((PyDictObject *)v->dict)->ma_version_tag!=v->version) return 1;
-        if (v->kind==1 && ((PyTypeObject *)v->object)->tp_mro!=v->mro) return 1;
-        if (v->kind!=1 && (PyObject *)Py_TYPE(v->object)!=v->mro) return 1;
+        uintptr_t current;
+        /* memcpy avoids aliasing a PyTypeObject* field as PyObject*. */
+        memcpy(&current,f->structures[i].address,sizeof(current));
+        if (current!=f->structures[i].expected) {f->dirty=1;return 1;}
     }
+    for (Py_ssize_t i=0;i<f->instance_count;i++) {
+        BindingVersion *v=f->instances[i];
+        if (namespace_dict(v->object)!=v->dict) {f->dirty=1;return 1;}
+    }
+    /* In CPython 3.11 every dict state receives a globally unique incrementing
+     * ma_version_tag. A private alternating value obtains the next tag without
+     * importing a hidden interpreter symbol or changing any workload dict.
+     * Consecutive tags prove no dict changed since our last scan. This is an
+     * exact mutation test, never a time interval or sampled binding check.
+     * Structure/instance-dict checks above remain unconditional. */
+    uint64_t previous=f->clock_version;
+    f->clock_flip^=1;
+    if (PyDict_SetItem(f->clock,f->clock_key,f->clock_flip ? Py_True : Py_False)<0) return -1;
+    uint64_t now=((PyDictObject *)f->clock)->ma_version_tag;
+    f->clock_version=now;
+    if (!f->clock_pending && previous && previous!=UINT64_MAX && now && now==previous+1) {
+        f->epoch_hits++;return 0;
+    }
+    f->scans++;
+    for (Py_ssize_t i=0;i<f->dictionary_count;i++) {
+        BindingDictionary *d=&f->dictionaries[i];
+        if (*d->address!=d->expected) {f->dirty=1;return 1;}
+    }
+    f->clock_pending=0;
     return 0;
 }
 
+/* Only the guard's freshly allocated private frame-flag dictionary is eligible.
+ * Account for its exact version increment, never for writes performed by client
+ * callbacks or workload code. A gap marks the snapshot for a full dict scan;
+ * later private writes cannot erase an intervening unrelated mutation. */
+static void binding_private_frame_write(PyObject *observer,PyObject *dict,uint64_t before) {
+    if (PyTuple_GET_SIZE(observer)<=2) return;
+    BindingFilter *f=get_filter(PyTuple_GET_ITEM(observer,2));
+    if (!f) return;
+    uint64_t after=((PyDictObject *)dict)->ma_version_tag;
+    if (after==before) return;
+    if (!f->clock_version || f->clock_version==UINT64_MAX || !after || after!=f->clock_version+1)
+        f->clock_pending=1;
+    f->clock_version=after;
+}
+
 static PyObject *filter_dirty(PyObject *self,PyObject *state) {
-    return PyBool_FromLong(binding_filter_dirty(get_filter(state)));
+    int result=binding_filter_dirty(get_filter(state));
+    return result<0 ? NULL : PyBool_FromLong(result);
+}
+
+/* Internal counters let regressions verify avoided work without timing limits. */
+static PyObject *binding_filter_stats(PyObject *self,PyObject *state) {
+    BindingFilter *f=get_filter(state);
+    if (!f) {PyErr_SetString(PyExc_ValueError,"Expected binding filter state");return NULL;}
+    return Py_BuildValue("{s:K,s:K,s:n,s:n}","dictionary_scans",f->scans,
+                         "unchanged_epochs",f->epoch_hits,"structures",f->count,
+                         "dictionaries",f->dictionary_count);
 }
 
 /* Conservative exact-identity rejection only. A dirty binding always reaches
@@ -196,7 +287,8 @@ static int filter_observation(PyObject *filter, PyFrameObject *frame, int event,
     if (filter==Py_None) return 1;
     if (event!=PyTrace_CALL && event!=PyTrace_C_CALL) return 0;
     BindingFilter *f=get_filter(filter);
-    if (binding_filter_dirty(f)) return 1;
+    int dirty=binding_filter_dirty(f);
+    if (dirty) return dirty;
     if (event==PyTrace_CALL) {
         if (!frame->f_frame || !frame->f_frame->f_func) return 1;
         return PyDict_Contains(f->python,(PyObject *)frame->f_frame->f_func);
@@ -240,6 +332,7 @@ static PyMethodDef methods[] = {
     {"original_native_function", original_native_function, METH_O, "Original native address before boundary protection."},
     {"make_filter", make_filter, METH_VARARGS, "Build immutable exact binding/version snapshot."},
     {"filter_dirty", filter_dirty, METH_O, "Check native binding snapshot without Python traversal."},
+    {"binding_filter_stats", binding_filter_stats, METH_O, "Internal exact-filter work counters."},
     {"set_profile", set_profile, METH_VARARGS, "Install compiler-isolated observer trampoline."},
     {"current_profile", guard_current_profile, METH_NOARGS, "Current logical profiling callback."},
     {"install_guard", install_guard, METH_VARARGS, "Multiplex profiler with opcode guard."},

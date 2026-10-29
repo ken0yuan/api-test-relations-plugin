@@ -79,6 +79,10 @@ class Registry:
 
     def _lookup(self,value,part,observed):
         key=(id(value),part)
+        cache=getattr(self,'_lookup_pass',None)
+        cached=cache.get(key) if cache is not None else None
+        if cached is not None and not namespaces_changed(cached[0],cached[1]):
+            return cached[2]
         cls=type(value)
         dependencies=[value]
         if issubclass(cls,type):dependencies.extend(type.__getattribute__(value,'__mro__'))
@@ -92,12 +96,18 @@ class Registry:
             self._lookups[key]=(value,part,_MISSING)
             raise
         self._lookups[key]=(value,part,result)
+        if cache is not None:
+            deps=tuple(dependencies)
+            # Pre-read versions are retained. A change during static lookup
+            # cannot make a stale prefix look current on its next use.
+            cache[key]=(deps,tuple(observed[id(n)] for n in deps),result)
         return result
 
     def _refresh(self,force=False):
         versions=tuple(namespace_version(n) for n in self.namespaces.values())
         observed={id(n):version for n,version in zip(self.namespaces.values(),versions)}
         module_count=len(sys.modules)
+        self._lookup_pass={}
         # Historical callable objects remain known for aliases captured before rebinding.
         for row in self.catalog['apis']:
             aid=row['api_id'];name=row['qualified_name'];parts=name.split('.')
@@ -142,6 +152,7 @@ class Registry:
         # If user code rebinds during traversal, retain pre-read versions so
         # the next event retries instead of treating a stale map as current.
         self.versions=tuple(observed[id(n)] for n in self.namespace_objects)
+        del self._lookup_pass
 
     def match(self,frame,event,arg):
         with self._lock:return self._match(frame,event,arg)

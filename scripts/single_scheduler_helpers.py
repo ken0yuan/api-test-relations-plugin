@@ -41,18 +41,74 @@ def live(worker):
     return bool(actual and actual['state'] != 'Z' and actual['start_ticks'] == worker['start_ticks'])
 
 
+def gpu_memory_sample():
+    """Keep failures observable; an unavailable sample never authorizes dispatch.
+
+    Preserve the existing command and five-second limit. No stale-value reuse,
+    guessed free memory, device reset, or retry that extends the resource probe.
+    """
+    command = ['nvidia-smi', '--id=0', '--query-gpu=memory.free',
+               '--format=csv,noheader,nounits']
+    started = time.monotonic()
+    detail = {'command':command, 'timeout_seconds':5, 'sampled_at':time.time()}
+    def snippet(value):
+        if isinstance(value, bytes): value = value.decode(errors='replace')
+        return str(value or '')[:512]
+    try:
+        output = subprocess.check_output(command, text=True, timeout=5,
+                                         stderr=subprocess.PIPE)
+        value = output.strip()
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError('expected one nonnegative integer in MiB')
+        gpu = int(value)
+        detail.update(state='ok', free_mib=gpu)
+    except subprocess.TimeoutExpired as exc:
+        gpu = None
+        detail.update(state='timeout', exception=type(exc).__name__,
+                      stdout=snippet(exc.output), stderr=snippet(exc.stderr))
+    except subprocess.CalledProcessError as exc:
+        gpu = None
+        detail.update(state='command_failed', exception=type(exc).__name__,
+                      returncode=exc.returncode, stdout=snippet(exc.output),
+                      stderr=snippet(exc.stderr))
+    except OSError as exc:
+        gpu = None
+        detail.update(state='os_error', exception=type(exc).__name__,
+                      errno=exc.errno, error=snippet(exc))
+    except ValueError as exc:
+        gpu = None
+        detail.update(state='invalid_output', exception=type(exc).__name__,
+                      stdout=snippet(output), error=snippet(exc))
+    except subprocess.SubprocessError as exc:
+        gpu = None
+        detail.update(state='subprocess_error', exception=type(exc).__name__,
+                      error=snippet(exc))
+    detail['elapsed_seconds'] = round(time.monotonic()-started, 3)
+    return gpu, detail
+
+
 def resources():
     mem = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
-    try:
-        gpu = int(subprocess.check_output(['nvidia-smi', '--id=0', '--query-gpu=memory.free',
-                   '--format=csv,noheader,nounits'], text=True, timeout=5).strip())
-    except (OSError, ValueError, subprocess.SubprocessError):
-        gpu = None
-    return {'memory_available_mib': int(mem['MemAvailable'].split()[0])//1024, 'gpu_free_mib': gpu}
+    gpu, detail = gpu_memory_sample()
+    return {'memory_available_mib': int(mem['MemAvailable'].split()[0])//1024,
+            'gpu_free_mib': gpu, 'gpu_query':detail}
 
 
 def can_launch(resource):
     return resource['memory_available_mib'] >= 3072 and resource['gpu_free_mib'] is not None and resource['gpu_free_mib'] >= 3072
+
+
+def backend_exclusion_reason(manifest, row):
+    """A CUDA campaign does not even collect XPU-only source files."""
+    if manifest.get('device_filter') != 'cuda': return None
+    for value in (row.get('module'), row.get('file')):
+        if not value: continue
+        parts = str(value).replace('\\', '/').lower().split('/')
+        for part in parts:
+            stem = part.removesuffix('.py')
+            if stem == 'xpu' or stem == 'test_xpu' or stem.startswith('test_xpu_'):
+                return 'excluded_backend_xpu'
+    return None
 
 
 def short_temp_alias(output, target):
@@ -102,6 +158,8 @@ def claim(db, rows):
 
 
 def launch_spec(manifest, root, row, attempt):
+    excluded = backend_exclusion_reason(manifest, row)
+    if excluded: raise ValueError(excluded + ': ' + row['module'])
     repo = Path(manifest['repo']); scratch = root/'worker-runtime'/attempt
     output = root/'attempts'/attempt
     env = {k: v for k,v in os.environ.items() if not k.startswith('API_RELATION_')}
@@ -112,6 +170,7 @@ def launch_spec(manifest, root, row, attempt):
     # is scoped to that collection and preserves ordinary pytest import semantics.
     source_dir = str(Path(row['source']).resolve().parent) if row['runner'] != 'doctests' else ''
     pythonpath = [manifest['plugin_root'], str(Path(__file__).parent),
+                  *manifest.get('module_dependency_paths', {}).get(row['module'], []),
                   *manifest.get('dependency_paths', []), source_dir,
                   str(repo/'test'), str(repo)]
     env.update(PYTHONPATH=':'.join(p for p in pythonpath if p),

@@ -1,6 +1,6 @@
 # API ↔ Test Relations
 
-当前版本 **0.1.10** 修复独立观察通道、原生 profiler 切换和导入中途 fork，详见 [0.1.10 修复说明](docs/release-0.1.10.md)。此前 **0.1.9** 新增显式 CUDA IPC VMM 兼容模式，用于已验证传统 CUDA 内存句柄导入异常的 Linux 环境；默认关闭。它不修复驱动的传统 IPC 接口，启用后采用另一种实际 GPU 内存共享方式，并记录进程级权限与分配器配置。详见 [0.1.9 兼容说明](docs/release-0.1.9.md)。0.1.8 的完整别名、调用位置、来源保留和单库 `/2` 契约继续适用，见 [0.1.8 发布说明](docs/release-0.1.8.md) 与 [数据契约](docs/data-contract.md)。
+当前版本 **0.1.11** 包含自定义编译池测试归属传递修复、按完整实例分片的并行调度，以及 CUDA 范围和资源诊断守卫，详见 [0.1.11 发布说明](docs/release-0.1.11.md)。此前的独立观察通道、原生 profiler 保护、行号缓存保护和精确绑定检查优化继续保留。完整别名、调用位置、来源保留和单库 `/2` 契约不变，见 [数据契约](docs/data-contract.md)。显式 CUDA IPC VMM 兼容模式仍默认关闭，其边界见 [0.1.9 兼容说明](docs/release-0.1.9.md)。
 
 独立 pytest 插件：在已有测试执行期间记录 **台账 API ↔ 测试实例** 的关系。
 目标部署环境是 **ARM64 Linux + 昇腾 NPU**；采集核心与设备无关，x86 Linux 也可以使用。
@@ -54,7 +54,7 @@ api-test-relations-plugin/
 在服务器**原有测试环境**中安装，以下安装不会依赖或替换 torch：
 
 ```bash
-python -m pip install ./api_test_relations-0.1.8-py3-none-any.whl
+python -m pip install ./api_test_relations-0.1.11-py3-none-any.whl
 api-test-relations doctor
 ```
 
@@ -77,7 +77,7 @@ python -m pytest test/YOUR_EXISTING_NPU_TEST.py \
 
 安装后 pytest 自动发现插件，但只有提供 `--api-relations-out` 才启用采集。如果环境设置了 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`，另加 `-p api_test_relations.pytest_plugin`。
 
-每次 pytest 使用新的、空的输出目录。此精简版不提供自动重跑、旧基线导入、调度或 pytest-xdist；多个独立 pytest 进程分别使用不同输出目录。内部启动的 Python 子进程和进程池任务由采集桥接跟踪。
+每次 pytest 使用新的、空的输出目录。核心插件不自动重跑或调度；需要并行续跑时显式使用仓库的调度脚本。多个独立 pytest 进程分别使用不同输出目录，当前不支持 pytest-xdist。内部启动的 Python 子进程和进程池任务由采集桥接跟踪。
 
 默认使用随包台账；可用 `--api-relations-catalog /path/to/catalog.json` 替换。默认排除 `torch.compile`。只解析台账中的 `torch.*` 条目；额外 `torch_npu.*` 台账需要新的命名空间适配，当前会记录 `outside_namespace`。
 
@@ -109,7 +109,9 @@ api-test-relations query --out /data/api-relations/relations.sqlite --api torch.
 
 已有规范化 `api_test_relations_single_database/1` 基线时，可用 `api-test-relations append --out RUN --database BASE.sqlite --module MODULE` 追加核验后的未完成实例，并自动清理本次原始目录。完成实例禁止覆盖；中断实例若重采没有包含旧的全部正向关系，事务回滚、保留原件。该格式与上面 `compact` 的单次运行导出格式不同，不会自动互转。
 
-仓库 `scripts/run_single_database.py --out PREPARED_RUN` 提供当前 CUDA 基线使用的单写入者、最多四 worker 调度接入。它读取已准备的 `manifest.json`、`queue.json`，按完整 nodeid 排除完成实例；合并核验成功后清理该 attempt 的私有临时/编译缓存。失败则停止派发并保留证据。冻结清单包括插件及调度器源文件哈希、源码提交与测试文件哈希、解释器/台账/数据库路径、测试模块列表、资源与时间限制；不提供任意目录自动恢复或后端自动迁移。NPU 接入继续使用现有 pytest 命令，不能直接套用此 CUDA 资源策略。
+仓库 `scripts/run_instance_shards.py --out PREPARED_RUN --max-workers N` 提供单写入者、按完整实例分片的 CUDA 调度接入。并发上限由调用参数指定，没有固定四 worker 上限；资源门槛和 30 秒错峰策略可以使实际并发更低。它读取显式准备的 `manifest.json`、`queue.json` 和 `instance-plan.json`，校验分片互不重叠且覆盖声明的剩余实例，每次启动再排除正式库中已完成的 nodeid。合并仍使用原来的严格核验，合并前另存带 SHA 的分片归档，日志和私有缓存保留。详见[实例分片调度](docs/instance-shard-scheduling.md)。原模块级入口 `scripts/run_single_database.py` 继续保留，不能同时监督同一个正式库。
+
+冻结清单包括插件及调度器源文件哈希、源码提交与测试文件哈希、解释器/台账/数据库路径、测试模块列表、资源与时间限制。脚本不提供任意目录自动恢复或后端自动迁移。NPU 接入继续使用现有 pytest 命令，不能直接套用此 CUDA 资源策略。调度脚本位于源码仓库，不会随 pytest 自动发现启动；核心插件仍可独立使用，当前不支持 pytest-xdist。
 
 WSL 运行时，应将活动数据库、分片、临时/编译缓存、调度状态和日志全部放在 WSL 的 Linux 文件系统（例如 `/home/USER/api-relations/`），不要放到 `/mnt/c` 或 `/mnt/d`。按测试查询的大库应先创建 `CREATE INDEX IF NOT EXISTS observations_by_test ON observations(test_key)`；它只增加索引，不修改关系。Windows 端仅保留源码及静态入口。
 
@@ -135,4 +137,4 @@ python scripts/check_smoke_relations.py --out /data/api-relations/npu-smoke-001
 
 0.1.1 修复注册表并发刷新、cProfile 抢占、SQLite 热日志合并三类问题；0.1.2 增加进程退出后的证据重汇总。39 项隔离回归及另外 2 项真实 PyTorch/CUDA 集成检查通过；还进行了真实上游测试对照。修复范围与剩余边界见 `RELEASE_NOTES.md` 和 `docs/limitations.md`。已有基线不会自动恢复或重采。
 
-普通回归无需安装 trace-api-chain。6 项 `paired_plugins` 联合回归默认跳过，本轮按用户要求不运行。独立环境验证（未安装 PyTorch、trace-api-chain）：102 项通过、9 项跳过，其中 6 项为上述联合回归、3 项为原有真实 PyTorch/CUDA 集成测试。
+普通回归无需安装 trace-api-chain。6 项 `paired_plugins` 联合回归按用户约定默认跳过，3 项真实 PyTorch/CUDA 集成测试仍为显式 opt-in。0.1.11 的独立快照为 **179 通过、9 跳过**，详见[发布验证收据](docs/validation/0.1.11.json)。跳过不计为通过，真实 CUDA 调度对照也不能替代 ARM/NPU 验收。

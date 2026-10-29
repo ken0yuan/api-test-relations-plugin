@@ -255,6 +255,9 @@ class Collector:
         if protected_backend_available():
             initialize_python_clients(self.raw_set,self.raw_trace,self.dispatch)
             protect_native_boundary(self.raw_set);protect_native_boundary(self.raw_trace)
+            # Synthetic traceback code must have a safe cache before execution;
+            # CPython initializes it before the first profile/trace callback.
+            protect_native_boundary(vars(types.CodeType)['replace'])
             import _lsprof
             for name in ('enable','disable'):
                 protect_native_boundary(vars(_lsprof.Profiler)[name])

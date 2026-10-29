@@ -75,6 +75,7 @@ def task_context():
 class ProcessBridge:
     def __init__(self,plugin=None):
         self.plugin=plugin;self.pid=os.getpid();self.enabled=True;self.local=threading.local();self.patches=[]
+        self.subproc_pool=None
         original=subprocess.Popen.__init__;signature=inspect.signature(original)
         def popen(process,*args,**kwargs):
             owner=current_owner()
@@ -139,6 +140,21 @@ class ProcessBridge:
             if current_owner() is None:return original_execv(path,argv)
             return execve(path,argv,os.environ)
         self.patch(os,'execv',execv)
+        if plugin is not None:
+            from relation_subproc_pool import SubprocPoolBridge
+            self.subproc_pool=SubprocPoolBridge(self)
+            self.subproc_pool.maybe_install()
+            original_import=builtins.__import__;original_module=importlib.import_module
+            def importing(*args,**kwargs):
+                result=original_import(*args,**kwargs)
+                if self.enabled:self.subproc_pool.maybe_install()
+                return result
+            def importing_module(*args,**kwargs):
+                result=original_module(*args,**kwargs)
+                if self.enabled:self.subproc_pool.maybe_install()
+                return result
+            self.patch(builtins,'__import__',importing)
+            self.patch(importlib,'import_module',importing_module)
 
     def patch(self,obj,name,replacement):
         self.patches.append((obj,name,getattr(obj,name),replacement));setattr(obj,name,replacement)
@@ -234,6 +250,7 @@ class ProcessBridge:
 
     def close(self):
         self.enabled=False
+        if self.subproc_pool is not None:self.subproc_pool.close()
         for obj,name,original,replacement in reversed(self.patches):
             if getattr(obj,name)==replacement:setattr(obj,name,original)
 

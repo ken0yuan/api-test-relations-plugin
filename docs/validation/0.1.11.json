@@ -1,0 +1,38 @@
+{
+  "version": "0.1.11",
+  "date": "2026-10-30",
+  "source_tree_before_adding_this_receipt": "4dc0478b54f2ab13d65cbcc54983fdeff1c7f410",
+  "regressions": {
+    "passed": 179,
+    "skipped": 9,
+    "paired_plugin_skips": 6,
+    "explicit_hardware_skips": 3,
+    "scope": "Independent staged-source snapshot; opt-in skips are not passes"
+  },
+  "packaging": {
+    "wheel_build": true,
+    "isolated_install_without_dependencies": true,
+    "installed_version": "0.1.11",
+    "doctor": true,
+    "running_capture_package_replaced": false
+  },
+  "instance_scheduler_validation": {
+    "targeted_checks_passed": 52,
+    "real_cuda_parallel_workers_observed": 2,
+    "serial_parallel_complete_relation_records": 36,
+    "serial_parallel_api_alias_site_phase_owner_equal": true,
+    "cuda_outputs_equal": true,
+    "completed_identity_phases_gap_preserved": true,
+    "prior_positive_preserved": true,
+    "strict_append_checks_per_capture": 6,
+    "integrity": "ok",
+    "foreign_keys": "ok"
+  },
+  "limits": [
+    "No ARM/NPU validation claim",
+    "No paired-plugin replay pass claim",
+    "No historical owner reassignment or zero-omission claim",
+    "API aliases are not separate function invocation counts"
+  ],
+  "assisted_by": "OpenAI Codex"
+}

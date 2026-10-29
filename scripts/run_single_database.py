@@ -15,7 +15,8 @@ import subprocess
 import time
 
 from single_scheduler_helpers import (read, save, sha, proc, live, resources, can_launch,
-                                     launch_spec, attempt_processes, terminate_attempt, cleanup_temp_alias)
+                                     launch_spec, attempt_processes, terminate_attempt, cleanup_temp_alias,
+                                     backend_exclusion_reason)
 from api_test_relations.single_store import completed, append_capture
 
 
@@ -71,6 +72,21 @@ def open_database(path):
     return sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True, timeout=60)
 
 
+def apply_backend_exclusions(meta, queue, root):
+    """Record dispatch scope without erasing historical capture evidence."""
+    records=[]
+    for row in meta['tests']:
+        reason=backend_exclusion_reason(meta,row)
+        if not reason: continue
+        records.append({'module':row['module'],'file':row['file'],
+                        'prior_queue_state':queue.get(row['module']),
+                        'state':reason,'future_collection_allowed':False})
+        queue[row['module']]=reason
+    save(root/'backend-exclusions.json',{'at':time.time(),'device_filter':meta['device_filter'],
+         'historical_evidence_preserved':True,'modules':records})
+    return records
+
+
 def cleanup_scratch(root, worker):
     """Only the private scratch belonging to an exited, verified attempt."""
     if attempt_processes(worker): raise RuntimeError('Attempt still has live processes')
@@ -85,6 +101,11 @@ def entered_nodes(worker):
     result = set()
     for path in Path(worker['shards']).glob('*.sqlite'):
         with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+            # A reusable compile child's bootstrap phase is a process lifetime,
+            # not evidence that its originating test body is still running.
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
+                if dict(db.execute('SELECT key,value FROM meta')).get('role') == 'child':
+                    continue
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='phases'").fetchone():
                 result.update(r[0] for r in db.execute("SELECT nodeid FROM phases WHERE state!='closed'"))
     return sorted(result)
@@ -103,10 +124,13 @@ def run(root):
     if subprocess.check_output(['git','rev-parse','HEAD'],cwd=meta['repo'],text=True).strip() != meta['commit']:
         raise RuntimeError('PyTorch source changed')
     queue = read(root / 'queue.json')
+    apply_backend_exclusions(meta, queue, root)
     workers, handles = {}, {}
     for original in meta.get('adopt_workers', []):
         worker = dict(original)
         job = worker['module']
+        if backend_exclusion_reason(meta,worker):
+            raise RuntimeError('Excluded backend worker requires verified stop before adoption: '+job)
         if job in workers or len(workers) >= meta['worker_limit']:
             raise RuntimeError('Duplicate/excess adopted workers')
         if not Path(worker['output']).is_dir():

@@ -141,8 +141,10 @@ static int prepare_code_line_cache(PyCodeObject *code) {
 static int guard_frame(RelationGuard *g, PyFrameObject *frame) {
     if (prepare_code_line_cache(frame->f_frame->f_code)<0) return -1;
     if (!PyDict_GetItem(g->frames,(PyObject *)frame)) {
+        uint64_t before=((PyDictObject *)g->frames)->ma_version_tag;
         if (PyDict_SetItem(g->frames,(PyObject *)frame,
                           frame->f_trace_opcodes ? Py_True : Py_False)<0) return -1;
+        binding_private_frame_write(g->observer,g->frames,before);
     }
     frame->f_trace_opcodes=1;
     return 0;
@@ -348,14 +350,22 @@ static int guarded_trace(PyObject *capsule, PyFrameObject *frame, int event, PyO
         /* Restore the client's own flag while invoking its callback. */
         frame->f_trace_opcodes=(opcode==Py_True);
         result=g->trace(g->trace_obj,frame,event,arg);
-        if (!result && g->active) result=PyDict_SetItem(g->frames,(PyObject *)frame,
-                                         frame->f_trace_opcodes ? Py_True : Py_False);
+        if (!result && g->active) {
+            uint64_t before=((PyDictObject *)g->frames)->ma_version_tag;
+            result=PyDict_SetItem(g->frames,(PyObject *)frame,
+                                 frame->f_trace_opcodes ? Py_True : Py_False);
+            if (!result) binding_private_frame_write(g->observer,g->frames,before);
+        }
         if (g->active) frame->f_trace_opcodes=1;
     }
     if (g->active && event==PyTrace_RETURN) {
         opcode=PyDict_GetItem(g->frames,(PyObject *)frame);
         frame->f_trace_opcodes=(opcode==Py_True);
-        if (opcode && PyDict_DelItem(g->frames,(PyObject *)frame)<0) result=-1;
+        if (opcode) {
+            uint64_t before=((PyDictObject *)g->frames)->ma_version_tag;
+            if (PyDict_DelItem(g->frames,(PyObject *)frame)<0) result=-1;
+            else binding_private_frame_write(g->observer,g->frames,before);
+        }
     }
 done:
     Py_DECREF(capsule);

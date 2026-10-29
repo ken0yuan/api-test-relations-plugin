@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "api-test-relations"
-version = "0.1.10+mergeindex.1.linecache.1"
+version = "0.1.10+mergeindex.1.linecache.1.binding.1"
 description = "Evidence-preserving PyTorch API to pytest test relation collection"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

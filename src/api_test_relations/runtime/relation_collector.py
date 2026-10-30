@@ -175,8 +175,9 @@ class Registry:
 
 
 class Collector:
-    def __init__(self,registry,on_relation,on_gap):
+    def __init__(self,registry,on_relation,on_gap,on_classified=None):
         self.registry=registry;self.on_relation=on_relation;self.on_gap=on_gap
+        self.on_classified=on_classified
         self.pid=os.getpid();self.local=threading.local();self.enabled=False
         self.raw_set=sys.setprofile;self.original_get=sys.getprofile;self.raw_get=current_profile
         self.raw_trace=sys.settrace;self.original_gettrace=sys.gettrace
@@ -225,7 +226,10 @@ class Collector:
                 if ids:
                     caller=frame.f_back if event=='call' else frame
                     site=(caller.f_code.co_filename,caller.f_lineno) if caller else ('unknown',0)
-                    self.on_relation(owner,ids,site)
+                    if self.on_classified is not None:
+                        from relation_context import call_kind
+                        self.on_classified(owner,ids,site,call_kind(caller,frame_function))
+                    else:self.on_relation(owner,ids,site)
             except Exception as exc:
                 # Observer errors must not fail the workload or silently disable profiling.
                 self.gap('collector_exception:'+type(exc).__name__+':'+str(exc)[:500])
@@ -291,19 +295,23 @@ class Collector:
         self.submit_wrapper=submit
         self._set_raw(self.dispatch)
 
-    def enter(self,owner):
+    def enter(self,owner,test_function=None):
+        from relation_context import TEST_FUNCTION
         token=OWNER.set(owner)
+        test_token=TEST_FUNCTION.set(test_function)
         try:self.registry.refresh()
         except Exception as exc:self.gap('collector_exception:'+type(exc).__name__+':'+str(exc)[:500])
         if self.raw_get()!=self.dispatch or not guard_intact():
             self.gap('profile_hook_lost_before_phase');self._set_raw(self.dispatch)
         if sys.setprofile!=self.setprofile or sys.getprofile!=self.getprofile:
             self.gap('profile_interface_replaced')
-        return token
+        return token,test_token
 
     def leave(self,token):
+        from relation_context import TEST_FUNCTION
         if self.raw_get()!=self.dispatch or not guard_intact():self.gap('profile_hook_lost_during_phase')
-        OWNER.reset(token)
+        owner_token,test_token=token
+        TEST_FUNCTION.reset(test_token);OWNER.reset(owner_token)
 
     def close(self):
         self.enabled=False

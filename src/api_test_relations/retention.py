@@ -11,6 +11,7 @@ import time
 from .cli import digest, read
 from .storage import active_children, connect, merge
 from .process_liveness import process_may_be_running
+from .classification import verify_rows as verify_classifications
 
 
 def _idle(root, manifest):
@@ -54,6 +55,7 @@ def _raw_check(db, root):
                 raise ValueError('Raw shard integrity failure: ' + path.name)
             tables = {r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             meta = dict(raw.execute('SELECT key,value FROM meta')) if 'meta' in tables else {}
+            verify_classifications(db,raw,'pytest',path.name)
             for table in ('tests', 'relations', 'gaps', 'phases'):
                 if table not in tables or (table == 'phases' and meta.get('role') == 'child'):
                     continue

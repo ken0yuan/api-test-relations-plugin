@@ -1,3 +1,20 @@
+# 0.1.13 — Direct and indirect test-body API calls
+
+Classify each observed API before deduplication using the current pytest body's
+function identity. Dynamic callable parameters and input construction in that body
+are direct; helper and fused-API internals remain indirect. Unknown identities and
+legacy evidence are not guessed. Keep both kinds and their own first sites when
+the same API is called in both ways, independent of execution order.
+
+Carry the identity through existing child and pool ownership contexts. Preserve
+classified provenance through raw merging, verified compaction, single-store
+append and `query --call-kind direct|indirect|unknown|all`. Original relation tables,
+alias groups, completed identities and 0.1.12 zombie handling remain intact.
+Checkpoint failure handling also retains both pending batches and records errors
+without assuming the historical pending-key length.
+
+See [0.1.13 release details](docs/release-0.1.13.md).
+
 # 0.1.12 — Zombie-aware post-exit evidence handling
 
 An exited, unreaped Linux producer still has a `/proc/PID` directory. Settle and

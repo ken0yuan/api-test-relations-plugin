@@ -3,6 +3,7 @@ import json,sqlite3,time
 from pathlib import Path
 from .cli import save
 from .process_liveness import process_may_be_running
+from .classification import create_tables,merge_rows,classified_query_rows,query_single
 
 def connect(root):
     db=sqlite3.connect(root/'relations.sqlite',timeout=60)
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS retained(job TEXT,nodeid TEXT,source_root TEXT,source
             db.execute('DROP TABLE relations')
             db.execute('ALTER TABLE relations_v018 RENAME TO relations')
             db.execute('CREATE INDEX by_api ON relations(api_id,nodeid)')
+    create_tables(db)
     return db
 
 def merge(db,job,folder,final=False):
@@ -61,6 +63,7 @@ def merge(db,job,folder,final=False):
                     db.executemany('INSERT OR '+operation+' INTO '+table+' VALUES ('+','.join('?' for _ in range(len(rows[0])+1))+')',[(job,*row) for row in rows])
                     if table=='relations':
                         db.executemany('INSERT OR IGNORE INTO relation_sources VALUES (?,?,?,?,?,?,?)',[(job,*row,shard.name) for row in rows])
+            merge_rows(db,source,job,shard.name)
             flag=source.execute("SELECT value FROM meta WHERE key='session_finished'").fetchone()
             finished=finished or bool(role=='root' and flag and flag[0]=='true')
         finally:source.close()
@@ -124,6 +127,12 @@ def query(args):
     root=args.out.resolve();published=(root/'storage.json').exists()
     path=root if root.is_file() else root/('relations-published.sqlite' if published else 'relations.sqlite')
     db=sqlite3.connect(path.as_uri()+'?mode=ro'+('&immutable=1' if published else ''),uri=True)
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'").fetchone():
+        try:result=query_single(db,args)
+        finally:db.close()
+        if args.json:save(args.json,result)
+        else:print(json.dumps(result,ensure_ascii=False,indent=2))
+        return
     ids=[r[0] for r in db.execute('SELECT api_id FROM apis WHERE name=? OR api_id=?',(args.api,args.api))]
     tests={}
     has_sources=bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='relation_sources'").fetchone())
@@ -139,5 +148,21 @@ def query(args):
         entry['evidence_origin']={'root':prior[0],'version':prior[1],'attempt':prior[2],'retained':True} if prior else {'root':str(root),'version':root.name,'retained':False}
     result={'api':args.api,'catalog_matches':ids,'tests':list(tests.values()),'unobserved_means_no_test':False,
         'binding_states':{aid:dict(db.execute('SELECT state,count(*) FROM registry WHERE api_id=? GROUP BY state',(aid,))) for aid in ids}}
+    selected=getattr(args,'call_kind','all')
+    classified={}
+    for aid in ids:
+        for job,node,phase,aliases,kind,site,sources in classified_query_rows(db,aid):
+            if selected!='all' and kind!=selected:continue
+            entry=classified.setdefault((job,node),{'nodeid':node,'file':node.split('::')[0],'evidence':[]})
+            entry['evidence'].append({'api_id':aid,'phase':phase,'call_kind':kind,
+                'same_callable_aliases':json.loads(aliases),'first_site':json.loads(site),'source_shards':sources})
+    result['call_kind_filter']=selected
+    result['classified_tests']=list(classified.values())
+    if selected!='all':
+        for key,entry in classified.items():
+            original=tests.get(key,{})
+            entry.update({k:original[k] for k in ('capture_gaps','evidence_origin') if k in original})
+        result['tests']=result['classified_tests']
+    db.close()
     if args.json:save(args.json,result)
     else:print(json.dumps(result,ensure_ascii=False,indent=2))

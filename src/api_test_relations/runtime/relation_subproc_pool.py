@@ -13,7 +13,7 @@ import sys
 import threading
 import weakref
 
-from relation_context import OWNER
+from relation_context import OWNER,TEST_FUNCTION
 
 MODULE = 'torch._inductor.compile_worker.subproc_pool'
 SOURCE_SHA256 = '5c95bd31af9266d201ebed9cc275a51948b682f6692af4513bbce99e59b2bea5'
@@ -52,9 +52,11 @@ def owned(context):
         yield
         return
     token = OWNER.set((context['nodeid'], context['phase']))
+    test_token = TEST_FUNCTION.set(context.get('test_function'))
     try:
         yield
     finally:
+        TEST_FUNCTION.reset(test_token)
         OWNER.reset(token)
 
 

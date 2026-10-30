@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 from .cli import read
 from .retention import _idle, _inventory
 from .storage import connect, merge
+from .classification import upgrade_single,import_single,single_observations,verify_rows as verify_classifications
 
 
 def upgrade_observation_schema(db):
@@ -34,6 +35,7 @@ def upgrade_observation_schema(db):
         PRIMARY KEY(api_key,test_key,phase_key,alias_group_key,site,source_capture,source_shard),
         FOREIGN KEY(api_key,test_key,phase_key,alias_group_key)
             REFERENCES observations(api_key,test_key,phase_key,alias_group_key))''')
+    upgrade_single(db)
 
 
 def completed(db, module):
@@ -83,6 +85,7 @@ def verify_raw(db, source, retained):
                     raise ValueError('Nonempty shard without ownership metadata')
                 continue
             child = dict(raw.execute('SELECT key,value FROM meta')).get('role') == 'child'
+            verify_classifications(db,raw,'pytest',file.name)
             for table in ('tests', 'phases', 'relations', 'gaps'):
                 if table not in tables or (table == 'phases' and child):
                     continue
@@ -130,6 +133,9 @@ def import_merged(db, merged, module, attempt, version, receipt):
         # No silent loss of observations saved during earlier interrupted attempts.
         if not observations(db, ids[node]) <= fresh:
             raise ValueError('New attempt does not contain all prior interrupted observations: ' + node)
+        fresh_kinds=set(merged.execute('SELECT api_id,phase,aliases,kind FROM call_kinds WHERE nodeid=?',(node,)))
+        if not single_observations(db,ids[node])<=fresh_kinds:
+            raise ValueError('New attempt lost prior classified observations: '+node)
         # Keep earlier positive evidence across interrupted attempts. The subset
         # check above forbids shrinking it; new groups/sites are appended below.
         db.execute('DELETE FROM test_phases WHERE test_id=?', (ids[node],))
@@ -149,6 +155,7 @@ def import_merged(db, merged, module, attempt, version, receipt):
         gid=db.execute('SELECT id FROM alias_groups WHERE api_ids_json=?',(aliases,)).fetchone()[0]
         evidence.append((api_ids[api],ids[node],pid,gid,site,receipt.get('source',attempt),shard))
     db.executemany('INSERT OR IGNORE INTO observation_evidence VALUES (?,?,?,?,?,?,?)',evidence)
+    import_single(db,merged,api_ids,ids,receipt.get('source',attempt))
     for row in evidence:
         if not db.execute('SELECT 1 FROM observation_evidence WHERE '+ ' AND '.join(c+' IS ?' for c in
             ('api_key','test_key','phase_key','alias_group_key','site','source_capture','source_shard')),row).fetchone():

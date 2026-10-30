@@ -1,7 +1,7 @@
 """Causal process propagation, explicit Python entry and durable launch evidence."""
 import atexit,builtins,importlib,inspect,json,os,subprocess,sys,threading,uuid
 from pathlib import Path
-from relation_context import OWNER
+from relation_context import OWNER,TEST_FUNCTION
 from relation_launch import prepare
 from relation_cuda_ipc import configure as configure_cuda_ipc
 DIRECTORY=Path(__file__).resolve().parent
@@ -36,7 +36,7 @@ def context_for(owner,transport):
     return {'token':uuid.uuid4().hex,'nodeid':owner[0],'phase':owner[1],'parent_pid':os.getpid(),
             'parent_token':BOOT_CONTEXT['token'] if BOOT_PID==os.getpid() and BOOT_CONTEXT else None,
             'transport':transport,'site':[frame.f_code.co_filename,frame.f_lineno] if frame else None,
-            'settings':settings}
+            'settings':settings,'test_function':TEST_FUNCTION.get()}
 
 def launch(context,pid,detail):
     try:start_ticks=Path('/proc',str(pid),'stat').read_text().rpartition(')')[2].split()[19]
@@ -57,13 +57,14 @@ def run_owned(context,function,args,kwargs):
     global TASK_CONTEXT
     old=TASK_CONTEXT;TASK_CONTEXT=context
     token=OWNER.set((context['nodeid'],context['phase']))
+    test_token=TEST_FUNCTION.set(context.get('test_function'))
     if ACTIVE is not None:register_task(ACTIVE,context)
     document('task-receipts',context['token']+'-'+str(os.getpid()),{**context,'pid':os.getpid(),'state':'started'})
     try:return function(*args,**kwargs)
     finally:
         if ACTIVE is not None:ACTIVE.flush()
         document('task-receipts',context['token']+'-'+str(os.getpid()),{**context,'pid':os.getpid(),'state':'finished'})
-        OWNER.reset(token);TASK_CONTEXT=old
+        TEST_FUNCTION.reset(test_token);OWNER.reset(token);TASK_CONTEXT=old
 
 def mapped_owned(context,function,*args):return run_owned(context,function,args,{})
 
@@ -267,6 +268,7 @@ def start_child(context):
         ACTIVE=plugin
         if TASK_CONTEXT:
             register_task(plugin,TASK_CONTEXT);OWNER.set((TASK_CONTEXT['nodeid'],TASK_CONTEXT['phase']))
+            TEST_FUNCTION.set(TASK_CONTEXT.get('test_function'))
         receipt(context,'instrumented')
     except Exception as exc:receipt(context,'bootstrap_error',type(exc).__name__+': '+str(exc)[:500])
 

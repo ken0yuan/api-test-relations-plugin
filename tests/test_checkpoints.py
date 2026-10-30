@@ -17,9 +17,11 @@ from relation_plugin import RelationPlugin
 def bare_plugin(tmp_path):
     p=object.__new__(RelationPlugin)
     p.pid=os.getpid();p.repo=tmp_path;p.paths={};p.pending={};p.gaps=set();p.processes={}
+    p.classified_pending={}
     p.lock=threading.RLock();p.registry=SimpleNamespace(status={'a':'bound'});p._saved_registry=None
     p.db=sqlite3.connect(tmp_path/'raw.sqlite',check_same_thread=False)
     p.db.executescript('''CREATE TABLE relations(nodeid,phase,api_id,aliases,site,PRIMARY KEY(nodeid,phase,api_id,aliases));
+CREATE TABLE call_kinds(nodeid,phase,api_id,aliases,kind,site,PRIMARY KEY(nodeid,phase,api_id,aliases,kind));
 CREATE TABLE gaps(nodeid,phase,reason,PRIMARY KEY(nodeid,phase,reason));
 CREATE TABLE registry(api_id PRIMARY KEY,state);
 CREATE TABLE processes(token PRIMARY KEY,nodeid,phase,pid,state);''')
@@ -35,12 +37,15 @@ def test_commit_failure_retains_original_batch_and_first_site(tmp_path):
     p.db=FailingCommit()
     with pytest.raises(sqlite3.OperationalError):p.flush()
     assert len(p.pending)==2
+    assert len(p.classified_pending)==2
     assert real.execute('SELECT count(*) FROM relations').fetchone()[0]==0
     p.record(('first[param]','call'),('a','alias'),(str(tmp_path/'later.py'),8))
     p.db=real;p.flush();p.flush()
     assert real.execute('SELECT count(*) FROM relations').fetchone()[0]==2
     assert json.loads(real.execute('SELECT site FROM relations LIMIT 1').fetchone()[0])==['pytorch/original.py',7]
     assert not p.pending
+    assert not p.classified_pending
+    assert real.execute('SELECT count(*) FROM call_kinds').fetchone()[0]==2
 
 
 def test_concurrent_producers_and_commits_preserve_each_owner(tmp_path):
@@ -54,6 +59,29 @@ def test_concurrent_producers_and_commits_preserve_each_owner(tmp_path):
     p.flush()
     assert set(p.db.execute('SELECT nodeid,phase,api_id FROM relations'))=={
         (f'test[{i}]','call',f'a{k}') for i in range(4) for k in range(100)}
+    assert p.db.execute('SELECT count(*) FROM call_kinds').fetchone()[0]==400
+
+
+def test_checkpoint_error_keeps_both_pending_batches(tmp_path):
+    from relation_checkpoint import Checkpoints
+    p=bare_plugin(tmp_path);p.record(('test_one','call'),('a',),('test.py',3),'direct')
+    writer=object.__new__(Checkpoints)
+    writer.pid=os.getpid();writer.folder=tmp_path;writer.plugin=p;writer.interval=0
+    writer.done=threading.Event()
+    class Stop:
+        calls=0
+        def wait(self,*args):
+            self.calls+=1
+            return self.calls>1
+    writer.stop=Stop();states=[];writer.publish=lambda state,**extra:states.append(state)
+    original=p.flush
+    def fail():raise sqlite3.OperationalError('injected disk failure')
+    p.flush=fail;writer.run();p.flush=original
+    assert states==['error'] and writer.done.is_set()
+    assert p.pending and p.classified_pending
+    assert any('checkpoint_write_failed:' in row[2] for row in p.gaps)
+    p.flush()
+    assert p.db.execute('SELECT kind FROM call_kinds').fetchall()==[('direct',)]
 
 
 @pytest.mark.parametrize('mode',['root','spawn_child','fork_pool','barrier'])

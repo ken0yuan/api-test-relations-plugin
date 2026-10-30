@@ -48,7 +48,8 @@ class Checkpoints:
                     # failure independently of SQLite, then retry next interval.
                     error=type(exc).__name__ + ': ' + str(exc)[:500]
                     with self.plugin.lock:
-                        for node,phase,_ in self.plugin.pending:
+                        for key in self.plugin.pending:
+                            node,phase=key[:2]
                             self.plugin.gaps.add((node,phase,'checkpoint_write_failed:'+error))
                     try:self.publish('error', error=error)
                     except OSError:pass

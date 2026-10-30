@@ -1,0 +1,71 @@
+{
+  "schema": "api_test_relations_release_validation/1",
+  "version": "0.1.13",
+  "base_commit": "4c7599c0eb87d67fc81d73e73b3e9601ef961ff3",
+  "regression": {
+    "summary": "223 passed, 9 skipped in 29.00s",
+    "seconds": 30.24
+  },
+  "classification_focused": {
+    "summary": "28 passed in 3.45s",
+    "seconds": 4.73
+  },
+  "npu_smoke": {
+    "summary": "6 passed in 1.56s",
+    "device": "0",
+    "gaps": 0,
+    "relation_rows": 8,
+    "classified_rows": 10,
+    "direct_add_tests": 4,
+    "indirect_add_tests": 4,
+    "classification_checks": "passed: direct, dynamic, helper, fused, mixed in both orders",
+    "audit": "passed"
+  },
+  "runtime_versions": {
+    "plugin": "0.1.13",
+    "torch": "2.16.0a0",
+    "torch_npu": "2.16.0a0"
+  },
+  "other_distributions_unchanged": true,
+  "doctor": "built_and_imported",
+  "wheel": {
+    "filename": "api_test_relations-0.1.13-py3-none-any.whl",
+    "bytes": 1162873,
+    "sha256": "21467d3688b9b5ae0bb4906ee5e051cec9d5c3ff3a03aaf3a24e04c363c45981",
+    "package_bytes_match_validated_source": true
+  },
+  "package_file_sha256": {
+    "api_test_relations/__init__.py": "eed35eb37dd31e3763e80f794529052a8c1014856e0d8b5f3ae96cf4bfb08643",
+    "api_test_relations/__main__.py": "f38fd2f2c920c29c828645e87ed64743d567aaaef7fba7a15d2c7d7f8094f91f",
+    "api_test_relations/audit.py": "6d87779aca51da5606ae837c920968d8b18a8cf9534fcfdc1cc734a6c0b10f64",
+    "api_test_relations/classification.py": "d8a72b665be9425d3c1e5b5219d0db853aed09ea9f4e783ee49be82b1f3af52f",
+    "api_test_relations/cli.py": "3fa46f0aad4167c341185f3643ad2a319a965c936230412cdaf9b80255c645f4",
+    "api_test_relations/process_liveness.py": "212efe92194bd78c7171fb0339250733a951bbdad823b50927b23ee6c8081ec9",
+    "api_test_relations/pytest_plugin.py": "a02bc345ec2f0dd9dd3d3a6b9611a795b4d8f6fb572bd232b6ab3d443f24152b",
+    "api_test_relations/recovery.py": "1aa0630d45e0e4df0ac8c67cdc10f789564ee87639b9a4698bd8511fa614bdd5",
+    "api_test_relations/retention.py": "25a91298eddfa6d4c4b2cac8d0cdf78e0bbebd82e4cc8307b06c1771dce33ad3",
+    "api_test_relations/settle.py": "1c9d845851a97faee5c8f3dd5c3f80dce17256806740a0c6e14eaaad5765ceab",
+    "api_test_relations/single_store.py": "6358be0bddd22754a1eae76fb1578cb15370d392c5b83fb4754ed460ddefb8c4",
+    "api_test_relations/storage.py": "fcae4ff65a60cb82a86d3d2b31418ad159a2d4e32c86240b623b275ed263c9d8",
+    "api_test_relations/catalogs/pytorch-api-ledger.json": "c086abe9b812c2c315f1c208dd25b7c83f9d5b0fe825710f25f5fb78d2a0cd48",
+    "api_test_relations/runtime/__init__.py": "3401c98a4dc361c803db42650c6a783b36d27dd40d959b414e402762f7d80431",
+    "api_test_relations/runtime/relation_checkpoint.py": "9f64b0b636ef58ab044fedf6aea2c56e4aac8404340d7fda3345950923a6248b",
+    "api_test_relations/runtime/relation_child_entry.py": "a0ca4cb502897f88592192e97fe8534775363ad9ac88ef30abcfd60866b6aa9a",
+    "api_test_relations/runtime/relation_collector.py": "0c71444e6b3d83cfd81f64c9565a0b439c7d35b0433d13b17421f4ccb61dfc82",
+    "api_test_relations/runtime/relation_context.py": "74ac3bc47f48c175da71990c0c420f2895c9689fd8f4291d69a2df069f2e9b0c",
+    "api_test_relations/runtime/relation_cuda_ipc.py": "8c1c6ba3c39635cdabd25f7c6941818e64f1b06b4615a2ab62e0abcdb6bf5926",
+    "api_test_relations/runtime/relation_guard.h": "9d5c3a1144b7f97acc9865ecc18dec4166b4fc5ba77d027272137db845aa2a9b",
+    "api_test_relations/runtime/relation_identity.c": "4a3c4063ddd81bfe4c49a7d1f7a85b3f77372cd98232ce74fee64b65ff3b2ecc",
+    "api_test_relations/runtime/relation_launch.py": "1180d27491865a7679a8cb6b49ae435546e23792ee81bb0065d0377b0b77b5f8",
+    "api_test_relations/runtime/relation_plugin.py": "a1c1c07f6ff0ff52a5a38fd958980605bd0b0c88306c4da9e1d0a096091a26a4",
+    "api_test_relations/runtime/relation_process.py": "44be4ed33aa50983a5ed31d8f2e534b1ef96a8522c25cbff2c1154e1d4aae115",
+    "api_test_relations/runtime/relation_subproc_pool.py": "5d9344d3c3a9bc830f1cd41b6a3c1d65d7a5d82628ad5f8fb7af39b52a0257d1",
+    "api_test_relations/runtime/bootstrap/__init__.py": "3401c98a4dc361c803db42650c6a783b36d27dd40d959b414e402762f7d80431",
+    "api_test_relations/runtime/bootstrap/sitecustomize.py": "d4942b02f6938ba74383ad18cae06e9f7fa30944496d4ef3238867f97de7e453"
+  },
+  "limits": [
+    "No full upstream test rerun",
+    "Nine existing optional paired/CUDA tests skipped",
+    "Legacy observations remain unclassified; no history rewritten"
+  ]
+}

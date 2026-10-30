@@ -1,5 +1,14 @@
 # 输出规范
 
+0.1.13 在原关系之外增加调用分类证据。原始 `call_kinds` 的键为
+`(nodeid, phase, api_id, aliases, kind)`，每种 kind 分别保留首次 site；汇总的
+`call_kinds` 与 `call_kind_sources` 另外保留 job、所有分片首次位置及 shard。
+kind 值域为 direct/indirect/unknown，含义见 [分类口径](release-0.1.13.md)。
+旧分片缺少分类时不猜测回填；分类来源必须对应同一原始分片中的观测身份。
+单库 `/2` 的可选附加表 `observation_call_kinds` 保存 API/test/phase/alias 的
+外键、kind、site、source_capture、source_shard。分类不能覆盖旧正向关系；
+同一逻辑关系允许直接和间接证据共存。查询 `--call-kind direct` 才是直接关系清单。
+
 每次 pytest 独立建立一个目录：
 
 ```text

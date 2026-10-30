@@ -30,6 +30,7 @@ PRAGMA synchronous=FULL;
 CREATE TABLE tests(nodeid TEXT PRIMARY KEY,file TEXT);
 CREATE TABLE phases(nodeid TEXT,phase TEXT,state TEXT,PRIMARY KEY(nodeid,phase));
 CREATE TABLE relations(nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT,PRIMARY KEY(nodeid,phase,api_id,aliases));
+CREATE TABLE call_kinds(nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,kind TEXT CHECK(kind IN ('direct','indirect','unknown')),site TEXT,PRIMARY KEY(nodeid,phase,api_id,aliases,kind));
 CREATE TABLE gaps(nodeid TEXT,phase TEXT,reason TEXT,PRIMARY KEY(nodeid,phase,reason));
 CREATE TABLE registry(api_id TEXT PRIMARY KEY,state TEXT);
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
@@ -38,9 +39,11 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         cat=json.loads(Path(os.environ['API_RELATION_CATALOG']).read_text())
         self.registry=Registry(cat,torch,excluded=json.loads(os.environ.get('API_RELATION_EXCLUDE','[]')))
         self.pending={};self.gaps=set();self.processes={};self.lock=threading.RLock()
+        self.classified_pending={}
         self._saved_registry=None
-        self.paths={};self.tokens={};self.collector=Collector(self.registry,self.record,self.gap)
+        self.paths={};self.tokens={};self.collector=Collector(self.registry,self.record,self.gap,self.record_classified)
         self.db.execute('INSERT INTO meta VALUES (?,?)',('collector','exact_identity_relations_v4'))
+        self.db.execute('INSERT INTO meta VALUES (?,?)',('call_classification','caller_test_function/1'))
         self.child_context=child_context
         self.db.execute('INSERT INTO meta VALUES (?,?)',('role','child' if child_context else 'root'))
         if child_context:
@@ -51,7 +54,7 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         self.db.commit();self.collector.install()
         from relation_process import ProcessBridge
         self.bridge=ProcessBridge(self)
-        if child_context:self.child_token=self.collector.enter((node,phase))
+        if child_context:self.child_token=self.collector.enter((node,phase),child_context.get('test_function'))
         from relation_checkpoint import Checkpoints
         self.checkpoints=Checkpoints(self)
 
@@ -66,12 +69,16 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         if reason=='child_process_not_instrumented:os.fork' and getattr(getattr(getattr(self,'bridge',None),'local',None),'fork_requested',False):return
         with self.lock:self.gaps.add((*owner,reason))
 
-    def record(self,owner,ids,site):
+    def record(self,owner,ids,site,kind='unknown'):
         with self.lock:
             for aid in ids:
                 # First site per actually observed alias group, never an invented
                 # union of bindings seen in different processes or at other times.
                 self.pending.setdefault((*owner,aid,tuple(ids)),site)
+                self.classified_pending.setdefault((*owner,aid,tuple(ids),kind),site)
+
+    def record_classified(self,owner,ids,site,kind):
+        self.record(owner,ids,site,kind)
 
     def flush(self):
         if os.getpid()!=self.pid:return
@@ -82,8 +89,13 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
             for (node,phase,aid,aliases),(file,line) in self.pending.items():
                 if file not in self.paths:self.paths[file]=repo_path(file,self.repo)
                 rows.append((node,phase,aid,json.dumps(aliases),json.dumps([self.paths[file],line])))
+            classified=[]
+            for (node,phase,aid,aliases,kind),(file,line) in self.classified_pending.items():
+                if file not in self.paths:self.paths[file]=repo_path(file,self.repo)
+                classified.append((node,phase,aid,json.dumps(aliases),kind,json.dumps([self.paths[file],line])))
             try:
                 self.db.executemany('INSERT OR IGNORE INTO relations VALUES (?,?,?,?,?)',rows)
+                self.db.executemany('INSERT OR IGNORE INTO call_kinds VALUES (?,?,?,?,?,?)',classified)
                 self.db.executemany('INSERT OR IGNORE INTO gaps VALUES (?,?,?)',self.gaps)
                 status=self.registry.status
                 if status is not self._saved_registry:
@@ -94,7 +106,7 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
                 self.db.rollback()
                 raise
             self._saved_registry=status
-            self.pending.clear();self.gaps.clear()
+            self.pending.clear();self.classified_pending.clear();self.gaps.clear()
 
     def stop_checkpoints(self):
         writer=getattr(self,'checkpoints',None)
@@ -119,7 +131,8 @@ CREATE TABLE processes(token TEXT PRIMARY KEY,nodeid TEXT,phase TEXT,pid INTEGER
         node=self.node(item)
         with self.lock:
             self.db.execute('INSERT OR REPLACE INTO phases VALUES (?,?,?)',(node,phase,'entered'));self.db.commit()
-        self.tokens[phase]=self.collector.enter((node,phase))
+        from relation_context import describe_test
+        self.tokens[phase]=self.collector.enter((node,phase),describe_test(getattr(item,'obj',None)))
 
     def end(self,item,phase):
         self.collector.leave(self.tokens.pop(phase))

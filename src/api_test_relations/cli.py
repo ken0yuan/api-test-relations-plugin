@@ -79,6 +79,7 @@ def initialize(root, repo, catalog, exclude, label, imports, runtime=None):
                 'runtime_directory': str(runtime), 'runtime_retained_for_callchain': runtime != root / 'runtime',
                 'collector_files': {str(p): digest(p) for p in runtime.rglob('*') if p.is_file()},
                 'mapping_semantics': 'Observed callable identities in setup/call/teardown; includes transitive calls and aliases. Not assertion or native-kernel coverage.'}
+    manifest['call_classification']='caller_test_function/1'
     save(root / 'manifest.json', manifest)
     from .storage import connect
     db = connect(root)
@@ -94,6 +95,10 @@ def summarize(root, state):
     with sqlite3.connect((root / 'relations.sqlite').as_uri() + '?mode=ro', uri=True) as db:
         counts = {name: db.execute('SELECT count(*) FROM ' + name).fetchone()[0] for name in ('tests', 'relations', 'gaps')}
         counts['apis_observed'] = db.execute('SELECT count(distinct api_id) FROM relations').fetchone()[0]
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='call_kinds'").fetchone():
+            counts['call_kind_relations']={kind:db.execute(
+                'SELECT count(*) FROM (SELECT DISTINCT nodeid,api_id FROM call_kinds WHERE kind=?)',(kind,)).fetchone()[0]
+                for kind in ('direct','indirect','unknown')}
     result = {'state': state, 'updated_at': time.time(), **counts, 'proves_zero_omissions': False}
     save(root / 'progress.json', result)
     return result
@@ -123,7 +128,9 @@ def doctor():
         shutil.copyfile(PACKAGE / 'runtime/relation_identity.c', runtime / 'relation_identity.c')
         shutil.copyfile(PACKAGE / 'runtime/relation_guard.h', runtime / 'relation_guard.h')
         build_identity(runtime)
-        subprocess.run([sys.executable, '-c', 'import _relation_identity; assert callable(_relation_identity.frame_function)'], cwd=folder, check=True)
+        subprocess.run([sys.executable, '-c',
+            'import sys;sys.path.insert(0,sys.argv[1]);import _relation_identity;assert callable(_relation_identity.frame_function)',
+            folder], cwd=folder, check=True)
     return {'host': platform.platform(), 'machine': platform.machine(), 'python': sys.version,
             'native_adapter': 'built_and_imported', 'torch_imported': False, 'npu_execution_verified': False}
 
@@ -133,6 +140,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='action', required=True)
     commands.add_parser('doctor', help='Build/import host native adapter without importing torch')
     q = commands.add_parser('query'); q.add_argument('--api', required=True); q.add_argument('--json', type=Path)
+    q.add_argument('--call-kind',choices=('all','direct','indirect','unknown'),default='all')
     commands.add_parser('status'); commands.add_parser('audit')
     s = commands.add_parser('settle', help='After pytest and its children exit, rebuild raw evidence into a new directory')
     s.add_argument('--destination', type=Path, required=True)

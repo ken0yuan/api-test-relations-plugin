@@ -1,0 +1,89 @@
+{
+  "schema": "api_test_relations_release_validation/1",
+  "version": "0.1.12",
+  "source_ref": "v0.1.12",
+  "base_commit": "b79891c51b0337a876fb9c43967eee870256c1bc",
+  "platform": {
+    "os": "Linux",
+    "architecture": "aarch64",
+    "python": "CPython 3.11.17",
+    "accelerator": "Ascend 910B2",
+    "cann": "9.2.0"
+  },
+  "regression": {
+    "passed": 194,
+    "skipped": 9,
+    "focused_passed": 48,
+    "skips": {
+      "paired_plugins_opt_in": 6,
+      "real_torch_cuda_opt_in": 3
+    }
+  },
+  "doctor": "passed",
+  "isolated_dependency_check": "passed",
+  "package_changes": {
+    "api-test-relations": {
+      "before": "0.1.11",
+      "after": "0.1.12"
+    }
+  },
+  "npu_smoke": {
+    "passed": 3,
+    "relations": 18,
+    "apis_observed": 8,
+    "gaps": 0
+  },
+  "original_incident_replay": {
+    "state": "passed",
+    "original_evidence_unchanged": true,
+    "source_file_count": 233,
+    "committed_relation_rows": 249,
+    "committed_relation_source_rows": 254,
+    "zombie_shard_relation_rows": 21,
+    "raw_gaps_preserved": true,
+    "finalizer_version": "0.1.12"
+  },
+  "remaining_incident_gaps": {
+    "count": 2,
+    "category": "external_uninstrumented"
+  },
+  "wheel": {
+    "filename": "api_test_relations-0.1.12-py3-none-any.whl",
+    "bytes": 1158133,
+    "sha256": "196d0c6ddf529618016e3c87b0fe003bd8cf9b8d492fd7c39e292bf6b3c38951",
+    "package_bytes_match_validated_source": true
+  },
+  "package_file_sha256": {
+    "api_test_relations/__init__.py": "4fa73ab120cb53d93e13203da0196df8c7aa8485587d46cbc73909d726647d58",
+    "api_test_relations/__main__.py": "f38fd2f2c920c29c828645e87ed64743d567aaaef7fba7a15d2c7d7f8094f91f",
+    "api_test_relations/audit.py": "cd477eb0887358ff3ac0d5b229519efe4d2424b712142b31e93f07ca74fcc16b",
+    "api_test_relations/cli.py": "71044b24c9b3b42f92e816cf074afcc48cf660331a1575c5d6728c7a236cfc0e",
+    "api_test_relations/process_liveness.py": "212efe92194bd78c7171fb0339250733a951bbdad823b50927b23ee6c8081ec9",
+    "api_test_relations/pytest_plugin.py": "a02bc345ec2f0dd9dd3d3a6b9611a795b4d8f6fb572bd232b6ab3d443f24152b",
+    "api_test_relations/recovery.py": "1aa0630d45e0e4df0ac8c67cdc10f789564ee87639b9a4698bd8511fa614bdd5",
+    "api_test_relations/retention.py": "e11247d8975b96a59b782ac1fd2946d8e9cd9e8a060bdc03f265068c9176ff00",
+    "api_test_relations/settle.py": "1c9d845851a97faee5c8f3dd5c3f80dce17256806740a0c6e14eaaad5765ceab",
+    "api_test_relations/single_store.py": "5c29126d5aecdb015821e8397cfc727f78321e77696b0e11c2034fe832a7c1ff",
+    "api_test_relations/storage.py": "66fbb4e95e3eb7b3b8740ea1e2428d966b51f92120505e24544ddc385905fb45",
+    "api_test_relations/catalogs/pytorch-api-ledger.json": "c086abe9b812c2c315f1c208dd25b7c83f9d5b0fe825710f25f5fb78d2a0cd48",
+    "api_test_relations/runtime/__init__.py": "3401c98a4dc361c803db42650c6a783b36d27dd40d959b414e402762f7d80431",
+    "api_test_relations/runtime/relation_checkpoint.py": "0f4c75c103887fff0ab1b0887d8ad0256783e27f731a8fdc9384dae679b2b7b6",
+    "api_test_relations/runtime/relation_child_entry.py": "a0ca4cb502897f88592192e97fe8534775363ad9ac88ef30abcfd60866b6aa9a",
+    "api_test_relations/runtime/relation_collector.py": "2503933570b90d984ef0f1245604e4125cbff19301f1d00d4b77290d969fb1ce",
+    "api_test_relations/runtime/relation_context.py": "82d5e608a415556f487385017548225ef8d11d146c9c3cb4be4465d1149483a4",
+    "api_test_relations/runtime/relation_cuda_ipc.py": "8c1c6ba3c39635cdabd25f7c6941818e64f1b06b4615a2ab62e0abcdb6bf5926",
+    "api_test_relations/runtime/relation_guard.h": "9d5c3a1144b7f97acc9865ecc18dec4166b4fc5ba77d027272137db845aa2a9b",
+    "api_test_relations/runtime/relation_identity.c": "4a3c4063ddd81bfe4c49a7d1f7a85b3f77372cd98232ce74fee64b65ff3b2ecc",
+    "api_test_relations/runtime/relation_launch.py": "1180d27491865a7679a8cb6b49ae435546e23792ee81bb0065d0377b0b77b5f8",
+    "api_test_relations/runtime/relation_plugin.py": "1e8a723589d62c28d66da4c23ec94186767e8e121f7a67d06ad9036007a5c531",
+    "api_test_relations/runtime/relation_process.py": "db8354d47ff8a48a084372e8cde57ce9b3ce17f8695333e1aa870a009d32a8c6",
+    "api_test_relations/runtime/relation_subproc_pool.py": "f05a9fa57bc05b9f4d4d9b408a2ae10c9fa2621fa3ff7279efc31287cb2ca40e",
+    "api_test_relations/runtime/bootstrap/__init__.py": "3401c98a4dc361c803db42650c6a783b36d27dd40d959b414e402762f7d80431",
+    "api_test_relations/runtime/bootstrap/sitecustomize.py": "d4942b02f6938ba74383ad18cae06e9f7fa30944496d4ef3238867f97de7e453"
+  },
+  "limits": [
+    "Uncommitted observations are not reconstructed",
+    "Raw gaps and missing terminal receipts are retained",
+    "This is not full-workload or zero-omission validation"
+  ]
+}

@@ -60,3 +60,31 @@ def test_empty_child_database_is_a_declared_gap(tmp_path):
     assert result['gaps']==2
     with sqlite3.connect(tmp_path/'new/relations.sqlite') as db:
         assert ('shard_without_metadata:2147483002-empty.sqlite',) in db.execute('SELECT reason FROM gaps').fetchall()
+
+
+def test_zombie_owner_relations_are_merged_without_erasing_missing_receipts(tmp_path, zombie_process):
+    source = fixture(tmp_path / 'run')
+    node = 'pytorch/test/test_one.py::test_one[param]'
+
+    def write_evidence(pid):
+        manifest = json.loads((source / 'manifest.json').read_text(encoding='utf-8'))
+        save(source / 'manifest.json', {**manifest, 'capture_pid': pid})
+        with sqlite3.connect(source / 'shards' / f'{pid}-zombie.sqlite') as db:
+            db.executescript('CREATE TABLE meta(key TEXT,value TEXT); CREATE TABLE tests(nodeid TEXT,file TEXT); CREATE TABLE relations(nodeid TEXT,phase TEXT,api_id TEXT,aliases TEXT,site TEXT);')
+            db.execute('INSERT INTO meta VALUES (?,?)', ('role', 'child'))
+            db.execute('INSERT INTO tests VALUES (?,?)', (node, 'pytorch/test/test_one.py'))
+            db.execute('INSERT INTO relations VALUES (?,?,?,?,?)', (node, 'call', 'a', '["a"]', '["pytorch/test/test_one.py", 19]'))
+        launch = {'token': 'zombie', 'nodeid': node, 'phase': 'call', 'pid': pid, 'kind': 'python'}
+        save(source / 'shards/launches/zombie.json', launch)
+        save(source / 'shards/receipts/zombie.json', {**launch, 'state': 'started'})
+
+    with zombie_process(write_evidence) as pid:
+        before = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
+        output = tmp_path / 'settled'
+        result = settle(source, output)
+        assert result['relations'] == 2 and result['gaps'] == 2
+        with sqlite3.connect(output / 'relations.sqlite') as db:
+            assert db.execute('SELECT site FROM relations ORDER BY site').fetchall() == [('["pytorch/test/test_one.py", 19]',), ('["pytorch/test/test_one.py", 9]',)]
+            assert db.execute('SELECT shard FROM relation_sources WHERE site=?', ('["pytorch/test/test_one.py", 19]',)).fetchone() == (f'{pid}-zombie.sqlite',)
+            assert set(db.execute('SELECT reason FROM gaps')) == {('raw_gap_must_remain',), ('child_capture_child_active:zombie',)}
+        assert before == {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}

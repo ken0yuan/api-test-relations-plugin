@@ -1,8 +1,10 @@
 """Rebuild a post-exit summary in a NEW directory, preserving the initial run."""
 from pathlib import Path
 import shutil
+from . import __version__
 from .cli import digest, finalize, read, save
 from .storage import connect, active_children
+from .process_liveness import process_may_be_running
 
 
 def settle(source, destination):
@@ -16,7 +18,7 @@ def settle(source, destination):
               for p in (source / 'shards').glob('*.sqlite') if p.name.split('-', 1)[0].split('.', 1)[0].isdigit()}
     if manifest.get('capture_pid'): owners.add(manifest['capture_pid'])
     # Conservative about PID reuse; never merge a possibly live producer.
-    live = sorted(pid for pid in owners if Path('/proc', str(pid)).exists())
+    live = sorted(pid for pid in owners if process_may_be_running(pid))
     live = sorted(set(live) | active_children(source / 'shards'))
     if live: raise RuntimeError('Capture producers must exit before settling: ' + str(live))
     # Reconstruct from raw evidence instead of importing provisional child states.
@@ -35,7 +37,7 @@ def settle(source, destination):
     save(destination / 'manifest.json', manifest)
     save(destination / 'settlement.json', {'source': str(source), 'source_manifest_sha256': digest(source / 'manifest.json'),
          'source_progress': read(source / 'progress.json'), 'copied_file_hashes': snapshot,
-         'operation': 'post-exit raw evidence rebuild', 'finalizer_version': '0.1.2', 'original_evidence_modified': False})
+         'operation': 'post-exit raw evidence rebuild', 'finalizer_version': __version__, 'original_evidence_modified': False})
     db = connect(destination)
     try:
         catalog = read(destination / 'api-catalog.json')

@@ -1,9 +1,10 @@
-"""Recover only hot-journal shards whose owner PID is absent; preserve original evidence."""
+"""Recover hot-journal shards only after their owner exits; preserve original evidence."""
 import hashlib,json,shutil,sqlite3,time
 from pathlib import Path
+from .process_liveness import process_may_be_running
 
 def proc(pid):
-    return Path("/proc",str(pid)).exists()
+    return process_may_be_running(pid)
 
 def recover_closed_shards(folder):
     """Let SQLite recover hot journals only after their owning process has exited.
@@ -46,7 +47,7 @@ def recover_closed_shards(folder):
                 return {'tables':[row[0] for row in tables],'dump':list(db.iterdump())}
             finally:db.close()
         expected=restore(probe/path.name)
-        # The process is still absent and evidence bytes have not changed.
+        # The owner still cannot write and evidence bytes have not changed.
         if proc(owner_pid):raise RuntimeError('Shard PID appeared during recovery')
         for name,digest in hashes.items():
             if hashlib.sha256((path.parent/name).read_bytes()).hexdigest()!=digest:

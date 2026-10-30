@@ -1,3 +1,20 @@
+# 0.1.12 — Zombie-aware post-exit evidence handling
+
+An exited, unreaped Linux producer still has a `/proc/PID` directory. Settle and
+hot-journal recovery now recognize its `Z` state instead of refusing the operation
+indefinitely. Settle, recovery, compact and child draining share one conservative
+check: live or unreadable/unknown processes still block post-exit operations, and
+recorded child start times continue to protect against PID reuse.
+
+Already committed relations, aliases, sites and shard provenance are merged through
+the existing validation path. Raw gaps and missing completion receipts remain gaps;
+this does not recover uncommitted observations or prove complete capture. Settle
+preserves its source and records the actual finalizer version.
+
+Validation includes real unreaped children, committed relationship retention,
+hot-journal rollback with incident copies, compact verification, live-writer refusal
+and PID reuse. See [release notes](docs/release-0.1.12.md) for the verified scope.
+
 # 0.1.7 — File-scoped collection gaps and sibling test imports
 
 File-level pytest collection gaps are now retained as module-owned records only when their source path exactly matches that module. Unknown collection paths and test-phase gaps without a test owner still block verification. Each pytest worker also receives its own test file's parent directory on `PYTHONPATH`, fixing sibling imports such as `test/nn/attention/test_fa3.py` importing `_fa_test_common.py`.

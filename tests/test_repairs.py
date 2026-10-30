@@ -254,6 +254,32 @@ def test_recovery_refuses_live_owner_and_unrelated_corruption(tmp_path):
     with pytest.raises(sqlite3.DatabaseError):recover_closed_shards(other)
 
 
+def test_hot_journal_recovery_keeps_committed_zombie_owner_data(tmp_path, zombie_process):
+    def write_and_exit(pid):
+        db = sqlite3.connect(tmp_path / f'{pid}-incident.sqlite')
+        db.execute('PRAGMA journal_mode=DELETE')
+        db.execute('PRAGMA cache_size=1')
+        db.execute('CREATE TABLE evidence(value BLOB)')
+        db.execute('INSERT INTO evidence VALUES (?)', (b'committed',))
+        db.commit()
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('UPDATE evidence SET value=?', (b'x' * 1000000,))
+        os._exit(0)
+
+    with zombie_process(write_and_exit) as pid:
+        path = tmp_path / f'{pid}-incident.sqlite'
+        original_bytes = path.read_bytes()
+        journal_bytes = Path(str(path) + '-journal').read_bytes()
+        logs = recover_closed_shards(tmp_path)
+        assert len(logs) == 1
+        original = Path(logs[0]).parent / 'original'
+        assert (original / path.name).read_bytes() == original_bytes
+        assert (original / (path.name + '-journal')).read_bytes() == journal_bytes
+        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as db:
+            assert db.execute('SELECT value FROM evidence').fetchall() == [(b'committed',)]
+        assert recover_closed_shards(tmp_path) == []
+
+
 def test_merge_retry_restores_committed_data(tmp_path):
     path=hot_shard(tmp_path);calls=[]
     def merge(db,job,folder,final=False):

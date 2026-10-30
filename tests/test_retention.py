@@ -79,6 +79,18 @@ def test_destination_protection(tmp_path):
     assert root.exists()
 
 
+def test_compact_accepts_an_exited_unreaped_owner_and_keeps_relations(tmp_path, zombie_process):
+    root = capture(tmp_path)
+    with zombie_process(lambda pid: None) as pid:
+        save(root / 'manifest.json', {**read(root / 'manifest.json'), 'capture_pid': pid})
+        target = tmp_path / 'relations.sqlite'
+        result = retention.compact(root, target)
+        assert result['cleanup'] == 'complete' and result['relations'] == 1
+        with sqlite3.connect(target) as db:
+            assert db.execute('SELECT reason FROM gaps').fetchone() == ('raw_gap_must_remain',)
+        assert not root.exists()
+
+
 def test_cleanup_failure_keeps_verified_database_and_reports_partial_cleanup(tmp_path, monkeypatch):
     root = capture(tmp_path)
     original = retention.shutil.rmtree

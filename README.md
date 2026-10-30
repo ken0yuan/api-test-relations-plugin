@@ -1,6 +1,6 @@
 # API ↔ Test Relations
 
-当前版本 **0.1.11** 包含自定义编译池测试归属传递修复、按完整实例分片的并行调度，以及 CUDA 范围和资源诊断守卫，详见 [0.1.11 发布说明](docs/release-0.1.11.md)。此前的独立观察通道、原生 profiler 保护、行号缓存保护和精确绑定检查优化继续保留。完整别名、调用位置、来源保留和单库 `/2` 契约不变，见 [数据契约](docs/data-contract.md)。显式 CUDA IPC VMM 兼容模式仍默认关闭，其边界见 [0.1.9 兼容说明](docs/release-0.1.9.md)。
+当前版本 **0.1.12** 修复僵尸进程被误判为活跃写入者、阻止关系汇总和热日志恢复的问题，详见 [0.1.12 发布说明](docs/release-0.1.12.md)。[0.1.11](docs/release-0.1.11.md) 的编译池归属传递、实例分片调度及此前的观察通道、原生 profiler、行号缓存和精确绑定保护继续保留。完整别名、调用位置、来源保留和单库 `/2` 契约不变，见 [数据契约](docs/data-contract.md)。显式 CUDA IPC VMM 兼容模式仍默认关闭，其边界见 [0.1.9 兼容说明](docs/release-0.1.9.md)。
 
 独立 pytest 插件：在已有测试执行期间记录 **台账 API ↔ 测试实例** 的关系。
 目标部署环境是 **ARM64 Linux + 昇腾 NPU**；采集核心与设备无关，x86 Linux 也可以使用。
@@ -54,7 +54,7 @@ api-test-relations-plugin/
 在服务器**原有测试环境**中安装，以下安装不会依赖或替换 torch：
 
 ```bash
-python -m pip install ./api_test_relations-0.1.11-py3-none-any.whl
+python -m pip install ./api_test_relations-0.1.12-py3-none-any.whl
 api-test-relations doctor
 ```
 

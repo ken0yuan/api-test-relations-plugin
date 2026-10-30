@@ -2,6 +2,7 @@
 import json,sqlite3,time
 from pathlib import Path
 from .cli import save
+from .process_liveness import process_may_be_running
 
 def connect(root):
     db=sqlite3.connect(root/'relations.sqlite',timeout=60)
@@ -108,11 +109,8 @@ def active_children(folder):
             data=json.loads(file.read_text())
             if data.get('service') or not data.get('pid'):continue
             if section=='receipts' and data.get('state') in ('finished','finished_without_torch','exec_transferred','bootstrap_error'):continue
-            try:
-                stat=Path('/proc',str(data['pid']),'stat').read_text().rpartition(')')[2].split()
-                if stat[0]=='Z' or (data.get('start_ticks') and stat[19]!=data['start_ticks']):continue
+            if process_may_be_running(data['pid'], data.get('start_ticks') or None):
                 active.add(data['pid'])
-            except (OSError,IndexError):pass
     return active
 
 def drain_children(folder,timeout=120,on_tick=None):

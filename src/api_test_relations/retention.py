@@ -10,6 +10,7 @@ import time
 
 from .cli import digest, read
 from .storage import active_children, connect, merge
+from .process_liveness import process_may_be_running
 
 
 def _idle(root, manifest):
@@ -25,11 +26,8 @@ def _idle(root, manifest):
                 pids.add(int(data['pid']))
     live = set()
     for pid in pids:
-        try:
-            state = Path('/proc', str(pid), 'stat').read_text().rpartition(')')[2].split()[0]
-            if state != 'Z': live.add(pid)
-        except FileNotFoundError:
-            pass
+        if process_may_be_running(pid):
+            live.add(pid)
     live |= active_children(root / 'shards')
     if live:
         raise RuntimeError('Capture producers must exit before compacting: ' + str(sorted(live)))

@@ -46,8 +46,12 @@ def validate_plan(plan, rows, exclusion):
 
 
 def remaining_nodes(db, module, allowed):
-    states = dict(db.execute('SELECT t.nodeid,t.capture_state FROM tests t JOIN modules m '
-                             'ON m.id=t.module_id WHERE m.module=?', (module,)))
+    states = {}
+    for start in range(0, len(allowed), 500):
+        part = allowed[start:start+500]
+        states.update(db.execute('SELECT t.nodeid,t.capture_state FROM tests t JOIN modules m '
+                                 'ON m.id=t.module_id WHERE m.module=? AND t.nodeid IN ('+
+                                 ','.join('?' for _ in part)+')', (module, *part)))
     if not set(allowed) <= states.keys():
         raise ValueError('Plan contains an unregistered instance')
     return sorted(node for node in allowed if states[node] != 'complete')
@@ -55,9 +59,12 @@ def remaining_nodes(db, module, allowed):
 
 def validate_capture(worker):
     output = Path(worker['output'])
-    selection = json.loads((output/'resume-selection.json').read_text())
+    selection = json.loads((output/'resume-selection.json').read_text(encoding='utf-8'))
     expected = set(worker['allowed_nodeids'])
-    if set(selection['selected']) != expected or len(selection['selected']) != len(expected):
+    missing = selection.get('missing', []) if worker.get('allow_missing_selection') else []
+    selected = selection['selected']
+    if (set(selected) | set(missing) != expected or set(selected) & set(missing)
+            or len(selected)+len(missing) != len(expected)):
         raise ValueError('Actual collection differs from the exact shard selection')
     if expected & set(selection['deselected']):
         raise ValueError('Completed selection overlap')

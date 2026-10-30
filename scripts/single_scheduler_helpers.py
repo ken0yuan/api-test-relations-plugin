@@ -10,16 +10,18 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tempfile
+from scheduler_backends import backend_kind
 
 
 def read(path):
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
 def save(path, data):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + '.tmp')
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2)); tmp.replace(path)
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),encoding='utf-8'); tmp.replace(path)
 
 
 def sha(path):
@@ -111,9 +113,9 @@ def backend_exclusion_reason(manifest, row):
     return None
 
 
-def short_temp_alias(output, target):
+def short_temp_alias(output, target, temp_root=None):
     """Short AF_UNIX address spelling, with data still in attempt-private scratch."""
-    base = Path('/tmp') / ('atr-' + str(os.getuid()))
+    base = Path(temp_root or tempfile.gettempdir()) / ('atr-' + str(os.getuid()))
     if base.is_symlink(): raise ValueError('Unsafe short-temp parent')
     base.mkdir(mode=0o700, exist_ok=True)
     info = base.stat()
@@ -135,7 +137,7 @@ def cleanup_temp_alias(worker, scratch):
     value = worker.get('temp_alias')
     if not value: return  # Older adopted workers used the long scratch spelling.
     alias = Path(value)
-    expected = Path('/tmp') / ('atr-' + str(os.getuid())) / hashlib.sha256(
+    expected = Path(worker.get('short_temp_root') or tempfile.gettempdir()) / ('atr-' + str(os.getuid())) / hashlib.sha256(
         str(Path(worker['output']).absolute()).encode()).hexdigest()[:20]
     target = (Path(scratch) / 'tmp').absolute()
     if alias != expected: raise ValueError('Invalid short-temp alias ownership')
@@ -157,19 +159,22 @@ def claim(db, rows):
             return row, attempt
 
 
-def launch_spec(manifest, root, row, attempt):
+def launch_spec(manifest, root, row, attempt, devices=None):
     excluded = backend_exclusion_reason(manifest, row)
     if excluded: raise ValueError(excluded + ': ' + row['module'])
     repo = Path(manifest['repo']); scratch = root/'worker-runtime'/attempt
     output = root/'attempts'/attempt
     env = {k: v for k,v in os.environ.items() if not k.startswith('API_RELATION_')}
+    env.update(manifest.get('environment', {}))
+    for name in manifest.get('environment_unset', []):
+        env.pop(name, None)
     env.pop('PYTEST_ADDOPTS', None); env.pop('PYTEST_PLUGINS', None)
     # PyTorch test files often import sibling helpers by bare module name
     # (for example test/nn/attention/test_fa3.py -> _fa_test_common.py).
     # Each worker owns exactly one source file, so exposing its parent directory
     # is scoped to that collection and preserves ordinary pytest import semantics.
     source_dir = str(Path(row['source']).resolve().parent) if row['runner'] != 'doctests' else ''
-    pythonpath = [manifest['plugin_root'], str(Path(__file__).parent),
+    pythonpath = [manifest['plugin_root'], manifest.get('package_site', ''), str(Path(__file__).parent),
                   *manifest.get('module_dependency_paths', {}).get(row['module'], []),
                   *manifest.get('dependency_paths', []), source_dir,
                   str(repo/'test'), str(repo)]
@@ -178,25 +183,51 @@ def launch_spec(manifest, root, row, attempt):
         CUDA_VISIBLE_DEVICES='0', OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', MAX_JOBS='2',
         TORCHINDUCTOR_COMPILE_THREADS='2', PYTORCH_NUM_PYTEST_RERUNS='0',
         RELATION_CAPTURE_ATTEMPT=str(output), RELATION_RESUME_SELECTION=str(root/'selections'/(attempt+'.json')))
+    backend = backend_kind(manifest)
+    if backend == 'npu':
+        env.pop('CUDA_VISIBLE_DEVICES', None)
+        env.update(PYTORCH_TEST_NPU='1', TORCH_DEVICE_BACKEND_AUTOLOAD='1')
+        if devices is not None:
+            env['ASCEND_RT_VISIBLE_DEVICES'] = ','.join(devices)
+    elif devices is not None:
+        env['CUDA_VISIBLE_DEVICES'] = ','.join(devices)
+        env.pop('ASCEND_RT_VISIBLE_DEVICES', None)
+    if manifest.get('package_site'):
+        env.update(PYTHONSAFEPATH='1', RELATION_PACKAGE_SITE=manifest['package_site'],RELATION_PLUGIN_ROOT=manifest['plugin_root'])
     for name, part in [('TMPDIR','tmp'), ('TORCHINDUCTOR_CACHE_DIR','inductor'),
                        ('TRITON_CACHE_DIR','triton'), ('TORCH_EXTENSIONS_DIR','extensions'), ('XDG_CACHE_HOME','cache')]:
         path = scratch/part; path.mkdir(parents=True, exist_ok=True); env[name] = str(path)
     # multiprocessing.resource_sharer adds pymp-*/listener-* below TMPDIR.
     # Long run/attempt names exceed sockaddr_un even with collection disabled.
-    alias = short_temp_alias(output, scratch/'tmp')
+    alias = short_temp_alias(output, scratch/'tmp', manifest.get('short_temp_root'))
     env['TMPDIR'] = str(alias); env['RELATION_TEMP_ALIAS'] = str(alias)
     prefix = Path(manifest['python']).parent.parent
     env['PATH'] = str(prefix/'bin')+':'+env.get('PATH','')
-    if (prefix/'bin/nvcc').exists():
+    if backend == 'cuda' and (prefix/'bin/nvcc').exists():
         env.update(CUDA_HOME=str(prefix), CUDACXX=str(prefix/'bin/nvcc'))
-        env['TORCH_CUDA_ARCH_LIST'] = manifest['cuda_capability']
+        if manifest.get('cuda_capability'):
+            env['TORCH_CUDA_ARCH_LIST'] = manifest['cuda_capability']
         headers = list(prefix.glob('targets/*/include/cuda_runtime.h'))
         if headers: env['CPATH'] = str(headers[0].parent)+':'+env.get('CPATH','')
     cmd = [manifest['python'], '-m', 'pytest', row['source'], '-q', '--tb=no', '--no-header',
            '--continue-on-collection-errors', '-p', 'api_test_relations.pytest_plugin', '-p', 'retained_selection',
            '--api-relations-out', str(output), '--api-relations-repo', str(repo),
-           '--api-relations-catalog', manifest['catalog'], '--api-relations-label', 'accelerator/cuda',
-           '--api-relations-child-wait', '120', '--basetemp', str(scratch/'pytest')]
+           '--api-relations-catalog', manifest['catalog'], '--api-relations-label', 'accelerator/'+backend,
+           '--api-relations-child-wait', str(manifest.get('child_wait_seconds', 120)), '--basetemp', str(scratch/'pytest')]
+    for module in manifest.get('imports', ['torch_npu'] if backend == 'npu' else []):
+        cmd += ['--api-relations-import', module]
+    if manifest.get('no_default_excludes'):
+        cmd.append('--api-relations-no-default-excludes')
+    for name in manifest.get('exclude_apis',[]):
+        cmd += ['--api-relations-exclude',name]
+    if manifest.get('execution_results'):
+        env['RELATION_ALLOW_MISSING_SELECTION'] = '1'
+        env['RELATION_EXECUTION_EVENTS'] = str(root/'execution-events'/(attempt+'.jsonl'))
+        env['RELATION_EXECUTION_STACK'] = str(root/'execution-events'/(attempt+'.stack'))
+        cmd = [x if x != '--tb=no' else '--tb=short' for x in cmd]
+        cmd += ['-p', 'scheduler_results', '-p', 'pytest_timeout',
+                '--timeout='+str(manifest['case_timeout_seconds']), '--timeout-method=signal',
+                '--junitxml='+str(root/'execution-xml'/(attempt+'.xml'))]
     if row['runner'] == 'doctests':
         cmd[3] = str(repo/'torch')
         cmd += ['-p', 'relation_doctest_plugin', '-o', 'python_files=__relation_no_ordinary_tests__',

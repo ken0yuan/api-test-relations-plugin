@@ -86,7 +86,8 @@ static PyObject *method_definition(PyObject *self, PyObject *arg) {
 
 static PyObject *namespace_dict(PyObject *arg) {
     PyObject *dict = NULL;
-    if (PyModule_Check(arg)) dict = PyModule_GetDict(arg);
+    if (PyDict_CheckExact(arg)) dict = arg;
+    else if (PyModule_Check(arg)) dict = PyModule_GetDict(arg);
     else if (PyType_Check(arg)) dict = ((PyTypeObject *)arg)->tp_dict;
     else {PyObject **slot=_PyObject_GetDictPtr(arg); if (slot) dict=*slot;}
     return dict;

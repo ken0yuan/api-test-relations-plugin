@@ -14,7 +14,9 @@ def pytest_addoption(parser):
     group.addoption('--api-relations-repo', help='Repository root used for pytorch/ source paths')
     group.addoption('--api-relations-catalog', default=str(DEFAULT_CATALOG))
     group.addoption('--api-relations-import', action='append', default=[], help='Explicit extension import before resolution, e.g. torch_npu')
-    group.addoption('--api-relations-exclude', action='append', default=['torch.compile'])
+    group.addoption('--api-relations-exclude', action='append', default=[])
+    group.addoption('--api-relations-no-default-excludes', action='store_true',
+                    help='Use the complete supplied catalog, including torch.compile; explicit exclusions still apply')
     group.addoption('--api-relations-label', default='unspecified', help='Metadata only, e.g. ascend-npu; does not set a device')
     group.addoption('--api-relations-child-wait', type=int, default=120)
     group.addoption('--api-relations-cuda-ipc-vmm', action='store_true',
@@ -34,8 +36,11 @@ def pytest_configure(config):
         raise pytest.UsageError('Nested/duplicate collectors are not supported')
     root = Path(output).resolve()
     imports = config.getoption('--api-relations-import')
+    exclusions=list(config.getoption('--api-relations-exclude'))
+    if not config.getoption('--api-relations-no-default-excludes'):
+        exclusions.append('torch.compile')
     manifest = initialize(root, Path(repo), Path(config.getoption('--api-relations-catalog')),
-                          config.getoption('--api-relations-exclude'), config.getoption('--api-relations-label'), imports,
+                          exclusions, config.getoption('--api-relations-label'), imports,
                           runtime=os.environ.get('TRACE_API_CHAIN_OBSERVER_RUNTIME'))
     runtime = Path(manifest['runtime_directory'])
     sys.path.insert(0, str(runtime))

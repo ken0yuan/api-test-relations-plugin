@@ -1,0 +1,79 @@
+{
+  "schema": "portable_scheduler_validation/1",
+  "status": "passed",
+  "regression": {
+    "passed": 218,
+    "optional_skipped": 9
+  },
+  "cuda": {
+    "unit_regression": true,
+    "simulated_all_card_scheduler": true,
+    "real_hardware": false
+  },
+  "npu": {
+    "backend": "Ascend910B2",
+    "ordinary_cards": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7"
+    ],
+    "ordinary_worker_pids": [
+      542829,
+      542830,
+      542831,
+      542832,
+      542833,
+      542834,
+      542835,
+      542836
+    ],
+    "exclusive_workers": 1,
+    "hccl_ranks": 8,
+    "hccl_all_reduce_results": [
+      36.0,
+      36.0,
+      36.0,
+      36.0,
+      36.0,
+      36.0,
+      36.0,
+      36.0
+    ],
+    "outcomes": {
+      "passed": 9
+    },
+    "relations": 577,
+    "capture_gaps": 0
+  },
+  "api": {
+    "count": 11026,
+    "compile_test_relations": 1,
+    "npu_dtype_cast_test_relations": 8,
+    "inventory": {
+      "path": "/home/workspace-ycy/pr-wheel-env-20261030-01a18a87/api-inventory-20261030/api_names_all_sheets.jsonl",
+      "sha256": "fe4197c38c1d1193ed47e1c46af4b6f1f3cc56567dfb92ea718083d902dd376d",
+      "records": 11026
+    },
+    "workbook_sha256": "ba79f0a4d43afae68456cb2347345a8bf4fa281377aafb6bbd2fefbc2028ff2d",
+    "workbook_unique_names": 11026,
+    "workbook_jsonl_difference": 0,
+    "original_labels_preserved": true,
+    "implicit_exclusions": []
+  },
+  "collector_version": "0.1.12",
+  "hardware_frozen_digest": "f63790bf595b2e9d06c166a9ccab2c9c15047babb7c13ee064f12565ad3e7569",
+  "recovery_checks": [
+    "native_crash_tail_continuation",
+    "pytest_timeout",
+    "blocked_timeout_signal",
+    "supervisor_adopts_original_worker",
+    "committed_append_before_receipt",
+    "missing_exact_identity",
+    "collection_error_queue_continuation"
+  ]
+}

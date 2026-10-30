@@ -25,16 +25,21 @@ class Registry:
         self.root=root;self.catalog=catalog
         self.excluded=set(excluded)
         self.python={};self.cfunc={};self.descriptor={};self.status={};self.keepalive=[]
+        self.instance_calls={}
         self.code=set();self.names={};self.seen=set();self.namespaces={};self.versions=()
         self._lookups={};self._watchers={};self.fast_state=[]
         self._lock=threading.RLock();self._refreshing=False
+        self.external_roots=tuple(n for n in catalog.get('namespace_roots',[]) if n!='torch')
+        self.module_roots={}
+        if self.external_roots:self.namespaces[id(sys.modules)]=sys.modules
         self.refresh()
 
     def refresh(self,force=False):
         # Build privately; a failed refresh cannot publish half a registry.
         with self._lock:
             if self._refreshing:return
-            if not force and self.versions:
+            roots_changed=any(self.module_roots.get(name) is not sys.modules.get(name) for name in self.external_roots)
+            if not force and self.versions and not roots_changed:
                 if not filter_dirty(self.fast_state):return
                 versions=tuple(namespace_version(n) for n in self.namespace_objects)
                 dirty={id(n) for n,old,new in zip(self.namespace_objects,self.versions,versions)
@@ -63,6 +68,8 @@ class Registry:
                 for name in ('python','cfunc'):
                     setattr(stage,name,{key:set(value) for key,value in getattr(self,name).items()})
                 stage.descriptor={key:list(value) for key,value in self.descriptor.items()}
+                stage.instance_calls={fn:{key:(obj,set(ids)) for key,(obj,ids) in entries.items()}
+                                      for fn,entries in self.instance_calls.items()}
                 for name in ('status','names','namespaces'):setattr(stage,name,dict(getattr(self,name)))
                 stage.code=set(self.code);stage.seen=set(self.seen);stage.keepalive=list(self.keepalive)
                 stage._lookups=dict(self._lookups)
@@ -109,7 +116,7 @@ class Registry:
         self._lookup_pass={}
         # Historical callable objects remain known for aliases captured before rebinding.
         for row in self.catalog['apis']:
-            aid=row['api_id'];name=row['qualified_name'];parts=name.split('.')
+            aid=row['api_id'];name=row['qualified_name'];parts=row.get('lookup_name',name).split('.')
             self.names[aid]=name
             if aid in self.excluded or name in self.excluded:
                 self.status[aid]='excluded_by_request';continue
@@ -117,9 +124,13 @@ class Registry:
                 self.status[aid]='native_symbol_not_instrumented';continue
             if row['kind'] not in ('function','method','class'):
                 self.status[aid]='non_callable_entry';continue
-            if parts[0]!='torch':
+            if len(parts)<2 or not all(part.isidentifier() for part in parts):
+                self.status[aid]='unresolved_inventory_name';continue
+            if parts[0]!='torch' and parts[0] not in self.external_roots:
                 self.status[aid]='outside_namespace';continue
-            value=self.root;owner=None
+            value=self.root if parts[0]=='torch' else sys.modules.get(parts[0]);owner=None
+            if value is None:
+                self.status[aid]='namespace_not_loaded';continue
             try:
                 for part in parts[1:]:
                     # isinstance may read a proxy's __class__ and run user code.
@@ -142,11 +153,23 @@ class Registry:
                 pair=(aid,owner if issubclass(type(owner),type) else None)
                 if pair not in entries:entries.append(pair)
             else:
-                self.status[aid]='call_protocol_not_observable';continue
+                try:protocol=self._lookup(type(value),'__call__',observed)
+                except (AttributeError,TypeError):protocol=None
+                if type(protocol) is not types.FunctionType or not protocol.__code__.co_argcount:
+                    self.status[aid]='call_protocol_not_observable';continue
+                self.namespaces[id(value)]=value
+                observed.setdefault(id(value),namespace_version(value))
+                # The shared __call__ function only opens the event filter.
+                # Ownership is matched separately against the exact receiver.
+                self.python.setdefault(protocol,set());self.code.add(protocol.__code__)
+                entries=self.instance_calls.setdefault(protocol,{})
+                receiver,ids=entries.setdefault(id(value),(value,set()))
+                ids.add(aid)
             if id(value) not in self.seen:
                 self.keepalive.append(value);self.seen.add(id(value))
             self.status[aid]='resolved_exact_callable'
         self.module_count=module_count
+        self.module_roots={name:sys.modules.get(name) for name in self.external_roots}
         self.namespace_objects=tuple(self.namespaces.values())
         # If user code rebinds during traversal, retain pre-read versions so
         # the next event retries instead of treating a stale map as current.
@@ -172,6 +195,15 @@ class Registry:
         class_ancestry=type.__getattribute__(receiver,'__mro__') if issubclass(type(receiver),type) else ()
         return tuple(sorted(aid for aid,owner in entries if owner is None or
             any(base is owner for base in ancestry) or any(base is owner for base in class_ancestry)))
+
+    def instance_match(self,frame):
+        with self._lock:
+            if not self.instance_calls:return ()
+            entries=self.instance_calls.get(frame_function(frame))
+            if not entries:return ()
+            receiver=frame.f_locals.get(frame.f_code.co_varnames[0],_MISSING)
+            entry=entries.get(id(receiver))
+            return tuple(sorted(entry[1])) if entry and entry[0] is receiver else ()
 
 
 class Collector:
@@ -222,10 +254,12 @@ class Collector:
                 if filter_dirty(self.registry.fast_state):
                     self.registry.refresh()
                 ids=self.registry.match(frame,event,arg)
-                if ids:
+                instance_ids=self.registry.instance_match(frame) if event=='call' else ()
+                if ids or instance_ids:
                     caller=frame.f_back if event=='call' else frame
                     site=(caller.f_code.co_filename,caller.f_lineno) if caller else ('unknown',0)
-                    self.on_relation(owner,ids,site)
+                    if ids:self.on_relation(owner,ids,site)
+                    if instance_ids:self.on_relation(owner,instance_ids,site)
             except Exception as exc:
                 # Observer errors must not fail the workload or silently disable profiling.
                 self.gap('collector_exception:'+type(exc).__name__+':'+str(exc)[:500])

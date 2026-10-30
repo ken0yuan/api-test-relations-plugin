@@ -111,7 +111,7 @@ api-test-relations query --out /data/api-relations/relations.sqlite --api torch.
 
 仓库 `scripts/run_instance_shards.py --out PREPARED_RUN --max-workers N` 提供单写入者、按完整实例分片的 CUDA 调度接入。并发上限由调用参数指定，没有固定四 worker 上限；资源门槛和 30 秒错峰策略可以使实际并发更低。它读取显式准备的 `manifest.json`、`queue.json` 和 `instance-plan.json`，校验分片互不重叠且覆盖声明的剩余实例，每次启动再排除正式库中已完成的 nodeid。合并仍使用原来的严格核验，合并前另存带 SHA 的分片归档，日志和私有缓存保留。详见[实例分片调度](docs/instance-shard-scheduling.md)。原模块级入口 `scripts/run_single_database.py` 继续保留，不能同时监督同一个正式库。
 
-冻结清单包括插件及调度器源文件哈希、源码提交与测试文件哈希、解释器/台账/数据库路径、测试模块列表、资源与时间限制。脚本不提供任意目录自动恢复或后端自动迁移。NPU 接入继续使用现有 pytest 命令，不能直接套用此 CUDA 资源策略。调度脚本位于源码仓库，不会随 pytest 自动发现启动；核心插件仍可独立使用，当前不支持 pytest-xdist。
+新增的[CUDA / NPU 全量调度入口](docs/portable-scheduler.md)通过配置生成可迁移清单：自动发现全部可见卡，普通 worker 各占一张，分布式 worker 独占全部卡；另有逐条执行结果、崩溃/超时续派和显式 `--resume`。旧 CUDA 清单继续使用原来的资源策略。冻结清单包括插件与调度源码哈希、测试源码、解释器、台账、数据库、资源与时间限制。调度脚本位于源码仓库，不会随 pytest 自动发现启动；核心插件仍可独立使用，当前不支持 pytest-xdist。
 
 WSL 运行时，应将活动数据库、分片、临时/编译缓存、调度状态和日志全部放在 WSL 的 Linux 文件系统（例如 `/home/USER/api-relations/`），不要放到 `/mnt/c` 或 `/mnt/d`。按测试查询的大库应先创建 `CREATE INDEX IF NOT EXISTS observations_by_test ON observations(test_key)`；它只增加索引，不修改关系。Windows 端仅保留源码及静态入口。
 

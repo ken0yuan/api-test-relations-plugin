@@ -72,3 +72,9 @@ python scripts/run_instance_shards.py --out "$RUN" --resume
 `pending = 0` 表示清单中每条都有终态记录，仍需检查 `not_collected`、`collection_error` 等结果，修复原因后安排单独复测。`capture_complete` 只表示 API 关系采集的完整性，不能用来统计测试通过数。
 
 完整 API 清单与 8 卡 NPU、8 rank HCCL、`torch.compile`、NPU 可调用算子对象的实测，以及异常续派和重启回归，见[验证收据](validation/portable-scheduler.json)。CUDA 保留逻辑回归和模拟调度验证，未在本轮使用 CUDA 实机。
+
+## 定期汇报和清理
+
+`progress_report.py --out "$RUN" --prune` 提供累计数及相对上轮增量，区分已派发、实际开始执行、已产生终态、未收集、收集失败、超时、崩溃和普通测试失败。关系总数使用 `DISTINCT(api_key,test_key)`；含阶段和别名的 `observations` 行数另列。当前不区分直接和间接调用。
+
+清理由独立维护进程完成，不替换运行中的冻结代码。`prune_instance_evidence.py` 默认只预检，加 `--apply` 后才删除。它复用入库的文件清单契约，校验正式库、已提交回执、归档哈希和生产者退出情况后，删除对应的 `preserved` 归档、私有临时/编译缓存和经过归属核验的短路径别名。未入库、核验失败、原始清理未完成或仍有生产者的证据一律保留。清理回执保存在运行目录，执行结果、调用位置证据、采集缺口和入库核验信息均在正式 SQLite 内；小型运行日志和事件文件暂留用于排障，最终交付物为单个 SQLite 文件。

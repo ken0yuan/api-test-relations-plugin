@@ -321,6 +321,7 @@ static PyMethodDef methods[] = {
     {"profile_client", profile_client, METH_NOARGS, "Current profiling client."},
     {"trace_client", trace_client, METH_NOARGS, "Current tracing client."},
     {"guard_intact", guard_intact, METH_NOARGS, "Whether both guard channels remain installed."},
+    {"client_transition_active", client_transition_active, METH_O, "Whether a user callback is inside its protected native return boundary."},
     {"guard_available", guard_available, METH_NOARGS, "Whether the opcode guard can repair profiler changes."},
     {"protected_observer_available", protected_observer_available, METH_NOARGS, "Whether callback transitions are atomically multiplexed."},
     {"protected_backend_available", protected_backend_available, METH_NOARGS, "Whether the native callback transition adapter is loaded."},

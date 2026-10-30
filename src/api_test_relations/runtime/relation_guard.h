@@ -20,6 +20,8 @@ typedef struct RelationGuard {
     unsigned long generation;
     struct RelationGuard *next;
     int active;
+    unsigned int client_profile_depth;
+    unsigned int client_trace_depth;
 } RelationGuard;
 
 static int guarded_profile(PyObject *, PyFrameObject *, int, PyObject *);
@@ -172,6 +174,27 @@ static int guard_rearm(PyObject *capsule) {
     return guard_rearm_on(capsule,PyThreadState_Get());
 }
 
+/* CPython's Python trace/profile trampolines clear their global channel when
+ * a client raises. Preserve that client-disable behavior and the exact error,
+ * but restore our independent observer before returning to the interpreter. */
+static int finish_client_callback(PyObject *capsule,int result) {
+    PyObject *type=NULL,*value=NULL,*tb=NULL;
+    if (result) PyErr_Fetch(&type,&value,&tb);
+    int restored=guard_rearm(capsule);
+    if (restored<0 && result) PyErr_WriteUnraisable(capsule);
+    if (result) {PyErr_Restore(type,value,tb);return result;}
+    return restored;
+}
+
+static PyObject *client_transition_active(PyObject *self,PyObject *channel) {
+    long which=PyLong_AsLong(channel);
+    if (which==-1 && PyErr_Occurred()) return NULL;
+    PyObject *capsule=find_guard();
+    if (!capsule) Py_RETURN_FALSE;
+    RelationGuard *g=guard_data(capsule);
+    return PyBool_FromLong(which ? g->client_trace_depth!=0 : g->client_profile_depth!=0);
+}
+
 /* A native profiler changes CPython callbacks inside a C call. Rearming on the
  * next opcode is too late: the genuine C_RETURN was already lost. Protect the
  * exact native callable's entry in place, rearming before it returns to ceval.
@@ -317,7 +340,10 @@ static int guarded_profile(PyObject *capsule, PyFrameObject *frame, int event, P
         if (!result && g->active && g->profile) {
             PyObject *client=Py_XNewRef(g->profile_obj);
             Py_tracefunc fn=g->profile;
+            g->client_profile_depth++;
             result=fn(client,frame,event,arg);
+            result=finish_client_callback(capsule,result);
+            g->client_profile_depth--;
             Py_XDECREF(client);
         }
     } else if (g && g->profile) {
@@ -349,7 +375,13 @@ static int guarded_trace(PyObject *capsule, PyFrameObject *frame, int event, PyO
     if (g->trace && (event!=PyTrace_OPCODE || opcode==Py_True)) {
         /* Restore the client's own flag while invoking its callback. */
         frame->f_trace_opcodes=(opcode==Py_True);
-        result=g->trace(g->trace_obj,frame,event,arg);
+        PyObject *client=Py_XNewRef(g->trace_obj);
+        Py_tracefunc fn=g->trace;
+        g->client_trace_depth++;
+        result=fn(client,frame,event,arg);
+        result=finish_client_callback(capsule,result);
+        g->client_trace_depth--;
+        Py_XDECREF(client);
         if (!result && g->active) {
             uint64_t before=((PyDictObject *)g->frames)->ma_version_tag;
             result=PyDict_SetItem(g->frames,(PyObject *)frame,

@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-30",
+  "scope": "Unreleased callback-exit and Dynamo observer isolation fixes",
+  "regression": {"passed": 244, "skipped": 9},
+  "recovery_after_quarantine_change": {"passed": 17},
+  "real_debugger_module": {
+    "attempted": 40,
+    "passed": 38,
+    "failed": 2,
+    "crashed": 0,
+    "capture_gaps": 0,
+    "blocked_captures": 0,
+    "baseline_failures": ["TestBytecodeDebugger::test_step_mode", "TestBytecodeDebugger::test_verbose_mode"],
+    "baseline_note": "Both assertions fail identically without the collector. The formerly collector-only breakpoint-marker crash passes after isolation.",
+    "evidence": "debugger-hookfix-1793356719268443180"
+  },
+  "optional_skips": "Paired trace-api-chain and real CUDA opt-in tests; no real CUDA validation claimed."
+}

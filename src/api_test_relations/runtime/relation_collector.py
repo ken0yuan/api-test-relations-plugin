@@ -16,8 +16,41 @@ from _relation_identity import frame_function, method_definition, namespace_vers
 from relation_context import OWNER
 from _relation_identity import make_filter, filter_dirty
 from _relation_identity import protected_observer_available, protected_backend_available, initialize_python_clients, set_python_client, protect_native_boundary, native_transition_active
+from _relation_identity import client_transition_active
 
 _MISSING = object()
+
+
+def skip_observer_code(*objects,frame_api=None):
+    """Exclude observer/wrapper frames, while allowing delegated user frames."""
+    if frame_api is None:
+        torch=sys.modules.get('torch')
+        frame_api=getattr(getattr(getattr(torch,'_C',None),'_dynamo',None),'eval_frame',None)
+    setter=getattr(frame_api,'set_code_exec_strategy',None)
+    strategy_type=getattr(frame_api,'_FrameExecStrategy',None) or getattr(frame_api,'FrameExecStrategy',None)
+    action=getattr(frame_api,'_FrameAction',None) or getattr(frame_api,'FrameAction',None)
+    if setter is None or strategy_type is None or action is None:return
+    strategy=strategy_type(action.SKIP,action.DEFAULT)
+    pending=[];owned=list(objects)
+    runtime=__file__.replace('\\','/').rpartition('/')[0]
+    for module in tuple(sys.modules.values()):
+        if type(module) is not types.ModuleType:continue
+        namespace=vars(module);file=namespace.get('__file__')
+        if type(file) is not str or file.replace('\\','/').rpartition('/')[0]!=runtime:continue
+        for value in tuple(namespace.values()):
+            if type(value) is types.FunctionType and value.__globals__ is namespace:owned.append(value)
+            elif issubclass(type(value),type) and getattr(value,'__module__',None)==namespace.get('__name__'):owned.append(value)
+    for obj in owned:
+        if type(obj) is types.FunctionType:pending.append(obj.__code__)
+        elif type(obj) is types.MethodType:pending.append(obj.__func__.__code__)
+        elif issubclass(type(obj),type):
+            pending.extend(value.__code__ for value in vars(obj).values() if type(value) is types.FunctionType)
+    seen=set()
+    while pending:
+        code=pending.pop()
+        if code in seen:continue
+        seen.add(code);setter(code,strategy)
+        pending.extend(value for value in code.co_consts if type(value) is types.CodeType)
 
 
 class Registry:
@@ -193,8 +226,16 @@ class Registry:
         # advertised __class__ or arbitrary metaclass __instancecheck__ behavior.
         ancestry=type.__getattribute__(type(receiver),'__mro__')
         class_ancestry=type.__getattribute__(receiver,'__mro__') if issubclass(type(receiver),type) else ()
-        return tuple(sorted(aid for aid,owner in entries if owner is None or
-            any(base is owner for base in ancestry) or any(base is owner for base in class_ancestry)))
+        # Do not create observer generator frames inside a C-call callback.
+        # Dynamo's auto-breakpoint path can reenter its frame evaluator there.
+        matched=[]
+        for aid,owner in entries:
+            if owner is None:
+                matched.append(aid);continue
+            for base in ancestry+class_ancestry:
+                if base is owner:
+                    matched.append(aid);break
+        return tuple(sorted(matched))
 
     def instance_match(self,frame):
         with self._lock:
@@ -214,6 +255,7 @@ class Collector:
         self.raw_trace=sys.settrace;self.original_gettrace=sys.gettrace
         torch=sys.modules.get('torch')
         frame_api=getattr(getattr(getattr(torch,'_C',None),'_dynamo',None),'eval_frame',None)
+        self.frame_api=frame_api
         self.evaluation_guard=getattr(frame_api,'set_eval_frame',None)
         self.old_start=_thread.start_new_thread;self.old_thread_start=threading._start_new_thread
         self.old_submit=concurrent.futures.ThreadPoolExecutor.submit
@@ -229,9 +271,9 @@ class Collector:
         if event not in ('sys.setprofile','sys.settrace','subprocess.Popen','os.fork','os.posix_spawn','os.exec','os.system'):return
         if not self.enabled or os.getpid()!=self.pid:return
         if event=='sys.setprofile' and not getattr(self.local,'internal',False):
-            if not native_transition_active():self.gap('profile_bypassed_multiplexer')
+            if not native_transition_active() and not client_transition_active(0):self.gap('profile_bypassed_multiplexer')
         elif event=='sys.settrace' and not getattr(self.local,'internal',False):
-            if not native_transition_active():self.gap('trace_guard_bypassed')
+            if not native_transition_active() and not client_transition_active(1):self.gap('trace_guard_bypassed')
         elif event in ('subprocess.Popen','os.fork','os.posix_spawn','os.exec','os.system'):
             self.gap('child_process_not_instrumented:'+event)
 
@@ -297,6 +339,9 @@ class Collector:
 
     def install(self):
         if self.enabled:return
+        # Observer implementation frames must not become Dynamo/debugger work.
+        # Mark only our own code objects, preserving workload function identities.
+        skip_observer_code(skip_observer_code,Registry,Collector,frame_api=self.frame_api)
         if protected_backend_available():
             initialize_python_clients(self.raw_set,self.raw_trace,self.dispatch)
             protect_native_boundary(self.raw_set);protect_native_boundary(self.raw_trace)

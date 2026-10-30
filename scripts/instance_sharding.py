@@ -57,6 +57,13 @@ def remaining_nodes(db, module, allowed):
     return sorted(node for node in allowed if states[node] != 'complete')
 
 
+def critical_observer_gaps(db):
+    return db.execute("SELECT reason FROM gaps WHERE reason LIKE 'collector_exception:%' "
+        "OR reason LIKE 'bootstrap_error%' OR reason LIKE '%hook_lost%' "
+        "OR reason LIKE '%bypassed%' OR reason LIKE 'checkpoint_write_failed%' "
+        "OR reason LIKE 'collection_unavailable:%' OR reason LIKE 'subproc_pool_adapter_unsupported%'").fetchall()
+
+
 def validate_capture(worker):
     output = Path(worker['output'])
     selection = json.loads((output/'resume-selection.json').read_text(encoding='utf-8'))
@@ -76,10 +83,7 @@ def validate_capture(worker):
                     if any(node not in expected for node, in db.execute('SELECT DISTINCT nodeid FROM '+table)):
                         raise ValueError('Raw owner escaped assigned instance shard')
             if 'gaps' in tables:
-                critical = db.execute("SELECT reason FROM gaps WHERE reason LIKE 'collector_exception:%' "
-                    "OR reason LIKE 'bootstrap_error%' OR reason LIKE '%hook_lost%' "
-                    "OR reason LIKE '%bypassed%' OR reason LIKE 'checkpoint_write_failed%' "
-                    "OR reason LIKE 'collection_unavailable:%' OR reason LIKE 'subproc_pool_adapter_unsupported%'").fetchall()
+                critical = critical_observer_gaps(db)
                 if critical:
                     raise ValueError('Observer failure in shard: '+repr(critical[:3]))
     for section in ('launches', 'receipts', 'tasks', 'task-receipts'):

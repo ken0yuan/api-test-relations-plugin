@@ -75,6 +75,14 @@ python scripts/run_instance_shards.py --out "$RUN" --resume
 
 ## 定期汇报和清理
 
+### 采集器修复后的续跑
+
+调试器或 profiler 的 Python 回调抛出异常时，CPython 会清除该用户回调。原生多路器现在保留原异常和用户回调停用语义，并在返回解释器前恢复独立采集钩子。插件自己的观察和导入包装代码标记为 Dynamo 跳过编译，调用到的用户代码仍可编译，避免自动断点重新进入插件包装器造成递归。真实未受保护的钩子替换仍会阻断汇总。验证见[修复收据](validation/callback-exit-recovery.json)。
+
+冻结运行不能原地替换采集器。`prepare_recovery_run.py --previous "$OLD_RUN" --out "$NEW_RUN" --config "$CONFIG" --validation "$VALIDATION" --retry-collection-errors` 为已停止任务创建新运行，核验清单、测试源码及已验证采集器的一致性后，通过 SQLite 备份保留旧库。它只重派经过精确身份复测、证明采集完整的受影响用例，以及显式要求重试的导入失败用例；已完成采集拒绝重置。
+
+重派前的执行结果保存在 `execution_result_history`，不完整关系与缺口保存在 `recovery_quarantine_*`，复核依据保存在 `recovery_reviews`。原运行和原始阻断证据保留。新目录首次启动使用普通启动命令，后续恢复才使用 `--resume`；旧运行不得同时启动。
+
 `progress_report.py --out "$RUN" --prune` 提供累计数及相对上轮增量，区分已派发、实际开始执行、已产生终态、未收集、收集失败、超时、崩溃和普通测试失败。关系总数使用 `DISTINCT(api_key,test_key)`；含阶段和别名的 `observations` 行数另列。当前不区分直接和间接调用。
 
 清理由独立维护进程完成，不替换运行中的冻结代码。`prune_instance_evidence.py` 默认只预检，加 `--apply` 后才删除。它复用入库的文件清单契约，校验正式库、已提交回执、归档哈希和生产者退出情况后，删除对应的 `preserved` 归档、私有临时/编译缓存和经过归属核验的短路径别名。未入库、核验失败、原始清理未完成或仍有生产者的证据一律保留。清理回执保存在运行目录，执行结果、调用位置证据、采集缺口和入库核验信息均在正式 SQLite 内；小型运行日志和事件文件暂留用于排障，最终交付物为单个 SQLite 文件。

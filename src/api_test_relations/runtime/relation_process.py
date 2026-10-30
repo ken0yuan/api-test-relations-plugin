@@ -157,6 +157,8 @@ class ProcessBridge:
             self.patch(importlib,'import_module',importing_module)
 
     def patch(self,obj,name,replacement):
+        collector=sys.modules.get('relation_collector')
+        if collector is not None:collector.skip_observer_code(type(self),replacement)
         self.patches.append((obj,name,getattr(obj,name),replacement));setattr(obj,name,replacement)
 
     def install_pools(self):
